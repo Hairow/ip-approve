@@ -1,0 +1,16 @@
+# /etc/ip-approve/approved.conf 配置模板
+# 复制到路由器 /etc/ip-approve/approved.conf 后按实际值填写
+# 权限应为 600（含密钥）
+
+# 钉钉机器人 webhook（access_token 为 hex，DING_SECRET 为 SEC 开头加签密钥）
+DING_WEBHOOK='https://oapi.dingtalk.com/robot/send?access_token=<hex-token>'
+DING_SECRET='SECxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+
+# 需要走审批的端口（空格分隔，fw4 会编译为端口集合）
+APPROVE_PORT='50000 56666 56667 56680'
+
+# 钉钉一键审批（留空则推送退回纯文本，无按钮）
+# QUICK_SECRET: 32 位 hex，watch 算签名与 CGI 验签必须一致
+# QUICK_URL: 公网入口域名（Tailscale Funnel），如 https://<设备名>.<tailnet>.ts.net
+QUICK_SECRET='<32位hex>'
+QUICK_URL='https://istoreos.tailaf168e.ts.net'

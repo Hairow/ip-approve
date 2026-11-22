@@ -1,0 +1,13 @@
+# 敏感配置：含钉钉 token/加签密钥、QUICK_SECRET，绝不入库
+approved.conf
+
+# 运行时数据（以路由器 /etc/ip-approve/ 为准）
+*.list
+pending.list
+
+# 备份
+firewall.bak-*
+*.tar.gz
+
+# 系统
+.DS_Store

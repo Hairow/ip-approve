@@ -1,0 +1,57 @@
+#!/bin/sh
+# 钉钉快捷审批端点（免登录，HMAC 签名 + 时效 + pending 校验三重防护）
+CONF=/etc/ip-approve/approved.conf
+. "$CONF" 2>/dev/null
+
+fail() {
+  printf 'Content-Type: text/html; charset=utf-8\r\n\r\n'
+  printf '<meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding-top:20%%"><h2>%s</h2></body>' "$1"
+  exit 0
+}
+
+qs="${QUERY_STRING:-}"
+get() { printf '%s' "$qs" | tr '&' '\n' | grep "^$1=" | head -1 | cut -d= -f2-; }
+
+a=$(get a); ip=$(get ip); ts=$(get ts); sign=$(get sign)
+
+[ -n "$QUICK_SECRET" ] || fail "服务未配置密钥"
+[ "$a" = "approve" ] || [ "$a" = "deny" ] || fail "非法操作"
+printf '%s' "$ip" | grep -qE '^[0-9a-fA-F.:]{1,45}$' || fail "非法 IP"
+printf '%s' "$ts" | grep -qE '^[0-9]{10}$' || fail "非法时间戳"
+
+now=$(date +%s)
+[ $((now - ts)) -ge -60 ] && [ $((now - ts)) -le 1800 ] || fail "链接已过期，请等待下一次推送"
+
+expect=$(printf '%s' "$a|$ip|$ts" | openssl dgst -sha256 -hmac "$QUICK_SECRET" -hex 2>/dev/null | awk '{print $NF}')
+[ "$expect" = "$sign" ] || fail "签名校验失败"
+
+# 已处理过的 IP：回显实际状态（等效于更新原推送的状态）
+ipstate() {
+  if printf '%s' "$ip" | grep -q ':'; then
+    af=/etc/ip-approve/ip-allow6.list; df=/etc/ip-approve/ip-deny6.list
+  else
+    af=/etc/ip-approve/ip-allow.list; df=/etc/ip-approve/ip-deny.list
+  fi
+  grep -qxF "$ip" "$af" 2>/dev/null && { echo approved; return; }
+  grep -qxF "$ip" "$df" 2>/dev/null && { echo denied; return; }
+  echo unknown
+}
+
+awk '{print $1}' /etc/ip-approve/pending.list | grep -qxF "$ip" || {
+  case "$(ipstate)" in
+    approved) fail "ℹ️ ${ip} 于本次推送之前已被批准，无需重复操作";;
+    denied)   fail "ℹ️ ${ip} 于本次推送之前已被拒绝，无需重复操作";;
+    *)        fail "该 IP 已不在待审批队列（可能已被处理）";;
+  esac
+}
+
+[ -n "$IPAPPROVE_QUICK" ] || export IPAPPROVE_SELFTEST=1
+out=$(/bin/sh /www/cgi-bin/ip-approve "$a" "$ip" 2>&1 | tail -1)
+printf '%s' "$out" | grep -q '"ok":true' || fail "执行失败，请打开面板处理"
+
+printf 'Content-Type: text/html; charset=utf-8\r\n\r\n'
+if [ "$a" = "approve" ]; then
+  printf '<meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding-top:20%%"><h2>✅ 已批准 %s</h2><p>该 IP 已加入放行名单，即刻生效</p></body>' "$ip"
+else
+  printf '<meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding-top:20%%"><h2>🚫 已拒绝 %s</h2><p>该 IP 已加入拉黑名单，即刻生效</p></body>' "$ip"
+fi
