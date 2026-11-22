@@ -2,6 +2,22 @@
 
 对 4 个端口（APPROVE_PORT，见 approved.conf）做「先探测进 pending → 钉钉推送 → 手机一键批准/拒绝」的动态放行体系。
 
+## 前置条件
+
+| 依赖 | 用途 | 必需性 |
+|------|------|--------|
+| OpenWrt/iStoreOS（fw4 + nftables） | 防火墙规则与 ipset 集合 | 必需 |
+| LuCI + rpcd | 审批面板（ipapprove.uc 控制器 + menu.d 菜单）、switch.html 走 /ubus 调用 | 必需（面板部分） |
+| `/www/cgi-bin/ip-approve` | 实际执行批准/拒绝（写 nft + 名单文件）的 CGI，LuCI 与钉钉链路共用 | 必需 |
+| ucode（luci.controller 框架） | ipapprove.uc 面板接口 | 必需（面板部分） |
+| openssl | HMAC-SHA256 签名/验签（钉钉加签 + 快捷链接） | 必需 |
+| busybox curl | 推送钉钉 | 必需 |
+| busybox logread -f | watch 服务监听内核防火墙日志抓探测源 | 必需 |
+| Tailscale（tailscaled，已开 MagicDNS + HTTPS 证书） | Funnel 公网入口 `https://<域名>:443 → 127.0.0.1:50080` | 可选（钉钉一键审批需要） |
+| 钉钉群机器人（自定义 webhook + 加签密钥） | 待审批通知与 actionCard 按钮 | 可选（推送通道） |
+
+注：无 QUICK_URL/QUICK_SECRET 或无 Tailscale 时，核心审批链（探测→pending→面板手动批准/拒绝）不受影响，仅失去钉钉一键审批。
+
 ## 目录结构
 
 | 文件/目录 | 作用 |
