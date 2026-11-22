@@ -11,6 +11,7 @@
 | ip-allow.list / ip-allow6.list | 批准名单（写入 nft ip_allow / ip_allow6） |
 | ip-deny.list / ip-deny6.list | 拒绝名单（写入 nft ip_deny / ip_deny6） |
 | approved-ip-watch.sh | 监听服务本体：解析探测日志 → nft pending 集合 + pending.list → 推钉钉 |
+| sync-approve-firewall.sh | 同步/重建防火墙：端口集合同步 + 缺失 ipset/规则自动重建（改 APPROVE_PORT 后运行） |
 | quick/cgi-bin/ip-approve-quick | 钉钉按钮的免登录签名 CGI（HMAC + 30 分钟时效 + pending 校验） |
 | README.md | 本文件 |
 
@@ -47,7 +48,7 @@ cn 白名单相关文件在 /etc/cn-ipset/，与本目录无关。
 
 ## 改端口
 
-编辑 approved.conf 的 APPROVE_PORT（空格分隔），然后重建防火墙规则并重启服务。
+编辑 approved.conf 的 APPROVE_PORT（空格分隔），然后运行 /etc/ip-approve/sync-approve-firewall.sh（同步端口 + 重建缺失的 ipset/规则 + 重启防火墙）。
 
 ## 升级保留
 
