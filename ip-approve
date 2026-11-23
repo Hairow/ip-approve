@@ -1,0 +1,155 @@
+#!/bin/sh
+# /www/cgi-bin/ip-approve — IP 审批接口（复用 LuCI 会话鉴权）
+# 用法1（CLI 自测，控制器调用，支持批量）：
+#   IPAPPROVE_SELFTEST=1 本脚本 approve ip1 [ip2 ...]
+# 用法2（HTTP GET 兼容，单个）：?action=list|approve|deny&ip=<地址>
+# 自测模式跳过鉴权；LuCI 控制器负责会话校验与参数校验
+
+CN=/etc/ip-approve
+PIDF_LOCK=/tmp/.pending.lock
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+json_out() {
+    printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n%s' "$1"
+}
+
+fail() { json_out "{\"ok\":false,\"error\":\"$1\"}"; exit 0; }
+
+# ---- 鉴权（HTTP 模式才走）----
+check_auth() {
+    local sid out
+    sid=$(printf '%s' "$HTTP_COOKIE" | tr ';' '\n' | sed -n 's/^ *sysauth=\([^ ;]*\).*/\1/p')
+    [ -n "$sid" ] || return 1
+    ubus call session get "{\"ubus_rpc_session\":\"$sid\"}" >/dev/null 2>&1
+}
+
+# ---- IP 校验 ----
+valid_ip4() {
+    echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+    local o; for o in $(echo "$1" | tr '.' ' '); do [ "$o" -le 255 ] 2>/dev/null || return 1; done
+}
+valid_ip6() {
+    echo "$1" | grep -qE '^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F:.]{1,4}$' || return 1
+}
+
+# ---- 失败明细（JSON 拼接）----
+FAILED_JSON="["
+FAILED_N=0
+fail_add() {  # $1=ip $2=error
+    [ $FAILED_N = 0 ] || FAILED_JSON="$FAILED_JSON,"
+    FAILED_JSON="$FAILED_JSON{\"ip\":\"$1\",\"error\":\"$2\"}"
+    FAILED_N=$((FAILED_N+1))
+}
+
+# ---- 动作 ----
+action_list() {
+    local rows="[" first=1 line ip ts
+    while read -r ip ts; do
+        [ -n "$ip" ] || continue
+        [ $first = 1 ] && first=0 || rows="$rows,"
+        rows="$rows{\"ip\":\"$ip\",\"time\":\"$ts\"}"
+    done < "$CN/pending.list"
+    rows="$rows]"
+    json_out "{\"ok\":true,\"rows\":$rows}"
+    exit 0
+}
+
+# 审批/拒绝（支持批量）：$1=approve|deny，其余为 IP
+action_set() {
+    local act="$1"; shift
+    local base listfile listfile6
+    case "$act" in
+        approve) base="ip_allow"; listfile="$CN/ip-allow.list";  listfile6="$CN/ip-allow6.list";;
+        deny)    base="ip_deny";  listfile="$CN/ip-deny.list";   listfile6="$CN/ip-deny6.list";;
+        *) fail "bad action";;
+    esac
+
+    # 1. 校验并按 v4/v6 分类
+    local ok4="" ok6="" ip
+    for ip in "$@"; do
+        case "$ip" in
+            *:*) if valid_ip6 "$ip"; then ok6="$ok6 $ip"; else fail_add "$ip" "bad-ip"; fi;;
+            *)   if valid_ip4 "$ip"; then ok4="$ok4 $ip"; else fail_add "$ip" "bad-ip"; fi;;
+        esac
+    done
+    local okips="${ok4# }"
+    [ -n "${ok6# }" ] && okips="${okips:+$okips }${ok6# }"
+    [ -n "$okips" ] || fail "no-valid-ip"
+
+    # 2. flock 内原子更新底账：从 pending.list 移除命中的，记录 done/miss
+    rm -f /tmp/.ipap.done /tmp/.ipap.lockrc
+    (
+        flock -n 9 || exit 1
+        awk -v ok="$okips" '
+            BEGIN{n=split(ok,tmp," ");for(i=1;i<=n;i++)ex[tmp[i]]=1}
+            $1 in ex { print $1 > "/tmp/.ipap.done"; next }
+            { print }
+        ' "$CN/pending.list" > /tmp/.pending.new
+        mv /tmp/.pending.new "$CN/pending.list"
+        for ip in $ok4; do grep -qxF "$ip" "$listfile"  2>/dev/null || echo "$ip" >> "$listfile";  done
+        for ip in $ok6; do grep -qxF "$ip" "$listfile6" 2>/dev/null || echo "$ip" >> "$listfile6"; done
+        echo ok > /tmp/.ipap.lockrc
+    ) 9>"$PIDF_LOCK"
+
+    [ -f /tmp/.ipap.lockrc ] || fail "op-failed"
+    rm -f /tmp/.ipap.lockrc
+
+    # 3. 区分成功/未命中
+    local done_ips="" e4="" e6="" p4="" p6=""
+    for ip in $(cat /tmp/.ipap.done 2>/dev/null); do done_ips="$done_ips $ip"; done
+    done_ips="${done_ips# }"
+    for ip in $okips; do
+        case " $done_ips " in
+            *" $ip "*) ;;
+            *) fail_add "$ip" "not-in-pending";;
+        esac
+    done
+    for ip in $done_ips; do
+        case "$ip" in
+            *:*) e6="${e6:+$e6, }$ip"; p6="${p6:+$p6, }$ip";;
+            *)   e4="${e4:+$e4, }$ip"; p4="${p4:+$p4, }$ip";;
+        esac
+    done
+
+    # 4. 即时生效：整批一次 nft；fw4 reload-sets 放后台同步文件与集合
+    [ -n "$e4" ] && nft add element inet fw4 "$base"      "{ $e4 }" >/dev/null 2>&1
+    [ -n "$e6" ] && nft add element inet fw4 "${base}6"   "{ $e6 }" >/dev/null 2>&1
+    [ -n "$p4" ] && nft delete element inet fw4 ip_pending  "{ $p4 }" >/dev/null 2>&1
+    [ -n "$p6" ] && nft delete element inet fw4 ip_pending6 "{ $p6 }" >/dev/null 2>&1
+    ( fw4 reload-sets >/dev/null 2>&1 & )
+
+    # 5. 输出结果
+    local dj="[" df=1
+    for ip in $done_ips; do [ $df = 1 ] && df=0 || dj="$dj,"; dj="$dj\"$ip\""; done
+    dj="$dj]"
+    FAILED_JSON="$FAILED_JSON]"
+    json_out "{\"ok\":true,\"action\":\"$act\",\"done\":$dj,\"failed\":$FAILED_JSON}"
+    exit 0
+}
+
+# ---- 入口 ----
+if [ -n "$IPAPPROVE_SELFTEST" ]; then
+    ACTION="$1"; shift
+else
+    case "$REQUEST_METHOD" in
+        GET|POST) ;;
+        *) fail "bad method";;
+    esac
+    check_auth || fail "unauthorized"
+    ACTION=$(printf '%s' "$QUERY_STRING" | sed -n 's/.*action=\([a-z]*\).*/\1/p')
+    IP=$(printf '%s' "$QUERY_STRING" | sed -n 's/.*[?&]ip=\([0-9a-fA-F:.]*\).*/\1/p')
+fi
+
+case "$ACTION" in
+    list) action_list;;
+    approve|deny)
+        if [ -n "$IPAPPROVE_SELFTEST" ]; then
+            [ $# -ge 1 ] || fail "missing ip"
+            action_set "$ACTION" "$@"
+        else
+            [ -n "$IP" ] || fail "missing ip"
+            action_set "$ACTION" "$IP"
+        fi
+        ;;
+    *) fail "missing action";;
+esac
