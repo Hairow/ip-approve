@@ -4,82 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>开关面板</title>
-<!--
-  iStoreOS 开关面板 · 独立部署版
-  ============================================================
-  面板项（只有这一项，别的不显示）：
-    1. passwall            init 服务：启动 / 停止
-
-  部署（在能 SSH 到路由器的机器上执行）：
-    scp switch.html iStoreOS:/www/switch.html
-  访问：
-    已登录 LuCI 的浏览器直接打开 -> 自动复用 LuCI 会话，无需再输密码
-      （LuCI 会话 cookie 为 HttpOnly，JS 读不到；改为请求 /cgi-bin/luci/
-        从页面 HTML 的 sessionid 字段提取，浏览器自动携带 cookie）
-    LuCI 未登录时打开 -> 显示登录框，输入 root 密码（与 LuCI 相同凭据）
-    面板不提供「退出」按钮：本页不调用 session.logout，
-    以免把正在使用的 LuCI 会话一起登出；会话失效时自动回到登录框。
-
-  升级保住文件（不做这一步，保留配置的常规升级后文件会丢）：
-    ssh iStoreOS 'echo /www/switch.html >> /etc/sysupgrade.conf'
-    ssh iStoreOS 'sysupgrade -l | grep switch'
-  只写单个文件，不要写 /www/ 整个目录。-n / 恢复出厂一律清空，另存本地副本。
-
-  原理：
-    后端接口由本项目自带的 LuCI 控制器提供：
-      /cgi-bin/luci/admin/switchboard/run
-    dispatcher 用 sysauth cookie 自动鉴权（与 IP 审批同一套），
-    控制器内部用 ucode ubus.call 调 rpcd。前端不再持有 sid，
-    也不再直连 /ubus。控制器源码见项目
-    usr/share/ucode/luci/controller/admin/switchboard.uc。
-
-  实机情况（2026-11-13 在 iStoreOS 24.10.8 上核实）：
-    - /etc/config/rpcd 的 root login 节 read='*' write='*'，
-      即 root 会话获得 /usr/share/rpcd/acl.d/ 全部组的权限。
-    - rc.list / rc.init 由 luci-mod-system 授权；uci get/set/apply
-      由 luci-base 授权（注意：本机所有 acl.d 都没有授权 uci.commit，
-      提交必须走 uci.apply）；firewall 配置的读写由 luci-app-firewall 授权；
-      luci.getProcessList 由 luci-app-ddns/upnp 等授权。
-      服务启停走本控制器 service action（见下方说明），firewall reload
-      仍走 rc.init。luci.setInitAction 会与 passwall 的 lua helper 死锁，弃用。
-    - passwall 启停不再依赖自建脚本：控制器在 uhttpd 进程（umask 0022）里
-      直接执行 /etc/init.d/passwall，避开 rpcd 的 umask 0077 与死锁。
-    - luci.getInitList 无任何组授权，本页不使用；服务信息全部来自 rc.list。
-    - 运行状态卡片：system.info/board、network.interface dump、
-      luci.getMountPoints（磁盘）、luci.getRealtimeStats（WAN 速率差分）、
-      luci-rpc.getDHCPLeases（在线设备按 MAC 去重）均在授权内。
-    - passwall 的 init 脚本非 USE_PROCD，rc.list 不返回 running，
-      运行态用 luci.getProcessList 按 /tmp/etc/passwall/bin/ 路径
-      匹配核心进程实时判断；查询失败才降级推定（徽章标「·推定」）。
-
-  各开关的实现（等价于 LuCI 里对应的开关按钮）：
-    passwall 启动/停止  -> uci.set global.enabled(1/0) -> uci.apply，
-                           再经控制器 service action 在 uhttpd 进程里执行
-                           /etc/init.d/passwall 的 start|restart|stop（执行前
-                           关继承 fd + umask 022，start 时进程在跑就 restart）。
-                           不经 rpcd，避开其 umask 0077 与 lua helper 调 ubus
-                           死锁造成的假启动；passwall 原 init 不改。
-                           与 LuCI passwall 页主开关同步；开机自启位不动，
-                           但 enabled=0 时重启路由器不会自动拉起代理。
-    端口转发 启用/禁用  -> uci.set -> uci.apply -> rc.init reload firewall，
-                           等价于 LuCI 防火墙页勾选/取消「启用」并保存应用。
-                           规则按 name 匹配 redirect 节，无对应规则显示「未找到」。
-
-  部署：除本文件外，还需部署控制器与菜单（升级保住三处）：
-    scp usr/share/ucode/luci/controller/admin/switchboard.uc \
-      iStoreOS:/usr/share/ucode/luci/controller/admin/
-    scp usr/share/luci/menu.d/luci-app-switchboard.json \
-      iStoreOS:/usr/share/luci/menu.d/
-    ssh iStoreOS 'for f in /www/switch.html \
-      /usr/share/ucode/luci/controller/admin/switchboard.uc \
-      /usr/share/luci/menu.d/luci-app-switchboard.json; \
-      do echo $f >> /etc/sysupgrade.conf; done'
-
-  安全：
-    接口由 LuCI dispatcher 的 sysauth cookie 鉴权，未登录返回 403；
-    控制器对 ubus 对象/方法做白名单限制，前端不持有 sid。
-    只暴露到内网或 VPN；别把 root 登录口裸奔公网。
--->
 <style>
   :root{--bg:#0f1420;--panel:#171e2e;--line:#2a3550;--text:#e8edf7;--muted:#8a97b0;
     --blue:#4f8cff;--green:#2ecc71;--red:#ff5c5c;--amber:#e0a63a;--radius:14px}
@@ -129,7 +53,8 @@
   }
   @media (min-width:1921px){          /* 大于 1080p 4 列 */
     .sysinfo,#list{grid-template-columns:repeat(4,minmax(0,1fr))}
-  }  .sysinfo .cell,#list .cell{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);
+  }
+  .sysinfo .cell,#list .cell{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);
     border-radius:10px;padding:12px 14px}
   .sysinfo .k{font-size:13px;color:var(--muted)}
   .sysinfo .v{font-size:16px;margin-top:5px;font-variant-numeric:tabular-nums;
@@ -171,7 +96,6 @@
     background:#1d2639;border:1px solid var(--line);padding:12px 22px;border-radius:12px;font-size:15px;
     transition:.25s;pointer-events:none;max-width:90vw}
   #toast.show{opacity:1;transform:none}
-  /* ============ 设备明细弹层 ============ */
   .cell.clickable{cursor:pointer;transition:border-color .2s;position:relative;padding-right:44px}
   .cell.clickable:hover{border-color:rgba(79,140,255,.45)}
   /* 卡片右侧的「查看明细」圆形箭头 */
@@ -207,7 +131,6 @@
   .tag{font-size:11px;padding:1px 6px;border-radius:6px;margin-right:6px;display:inline-block}
   .tag.v4{background:rgba(79,140,255,.16);color:var(--blue)}
   .tag.v6{background:rgba(46,204,113,.16);color:var(--green)}
-  /* ============ 响应式 ============ */
   @media (max-width:600px){
     .wrap{width:100%}
     .sysinfo{grid-template-columns:1fr}
@@ -274,16 +197,10 @@
 </div>
 
 <script>
-/* ============================================================
- * 面板项：只有这一项
- *   type:'service'  -> /etc/init.d/ 下的服务，start/stop
- *   type:'redirect' -> /etc/config/firewall 里的端口转发规则，
- *                      name 必须与 LuCI 里的规则名完全一致
- * ============================================================ */
+/* 面板项：type:'service' -> /etc/init.d/ 下的服务，start/stop。
+   pgrep：非 procd 服务 rc.list 查不到运行态，后端按命令行前缀匹配真实进程。 */
 const ITEMS = [
-  /* pgrep：非 procd 服务（如 passwall）rc.list 查不到运行态，
-     用 luci.getProcessList 按 pgrep 字段（进程命令行前缀）匹配真实进程 */
-  { name: 'passwall',     desc: 'PassWall 分流',       type: 'service', pgrep: '/tmp/etc/passwall/bin/' },
+  { name: 'passwall', desc: 'PassWall 分流', type: 'service', pgrep: '/tmp/etc/passwall/bin/' },
 ];
 
 const REFRESH_MS = 30000;
@@ -304,10 +221,9 @@ function stateBody() {
   };
 }
 
-/* ==================== 状态 ==================== */
 const S = {
   loggedIn: false,     /* LuCI sysauth cookie 有效（接口探测通过） */
-  status: {},          /* name -> { on, source, enabled, known, section } */
+  status: {},          /* name -> { on, source, enabled, known } */
   busy: false,
   rcAvailable: true,
   sysinfo: null,       /* system.info：运行时间/负载/内存 */
@@ -331,7 +247,7 @@ function panelCols() {
 }
 function bootHeight() {
   let m = {};
-  try { m = JSON.parse(localStorage.getItem(PANEL_H_KEY)) || {}; } catch (_) { /* 忽略 */ }
+  try { m = JSON.parse(localStorage.getItem(PANEL_H_KEY)) || {}; } catch (_) {}
   return m[panelCols()] || Math.round(window.innerHeight * 0.6);
 }
 function applyBootHeight() {
@@ -341,12 +257,12 @@ function savePanelHeight() {
   const p = $('panel');
   if (!p || getComputedStyle(p).display === 'none') return;
   const h = Math.round(p.offsetHeight);
-  if (h < 200) return;                      /* 空壳或未渲染，不记录 */
+  if (h < 200) return;
   let m = {};
-  try { m = JSON.parse(localStorage.getItem(PANEL_H_KEY)) || {}; } catch (_) { /* 忽略 */ }
+  try { m = JSON.parse(localStorage.getItem(PANEL_H_KEY)) || {}; } catch (_) {}
   if (m[panelCols()] === h) return;
   m[panelCols()] = h;
-  try { localStorage.setItem(PANEL_H_KEY, JSON.stringify(m)); } catch (_) { /* 忽略 */ }
+  try { localStorage.setItem(PANEL_H_KEY, JSON.stringify(m)); } catch (_) {}
 }
 const hasOwn = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
 const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -363,7 +279,6 @@ function saveGuess(name, running) {
   try { localStorage.setItem(GUESS_KEY, JSON.stringify(g)); } catch (_) {}
 }
 
-/* ==================== 自有控制器接口 ==================== */
 /* 所有后端调用统一走 /cgi-bin/luci/admin/switchboard/run，
    会话由 LuCI dispatcher 的 sysauth cookie 鉴权，前端不再持有 sid。
    未登录（403 + x-luci-login-required）即回登录页并中止调用链。 */
@@ -389,7 +304,7 @@ async function api(action, data) {
 }
 
 /* 兼容原来的调用点：搬到控制器 call 动作，返回值与 ubus 原始响应同构 */
-async function ubus(obj, mtd, params, soft) {
+async function ubus(obj, mtd, params) {
   const j = await api('call', { o: obj, m: mtd, p: params || {} });
   return j.data;
 }
@@ -406,10 +321,6 @@ async function ubus(obj, mtd, params, soft) {
 async function serviceAction(act) {
   await api('service', { act });
 }
-async function initAction(name, action) {
-  const r = await ubus('rc', 'init', { name, action }, true);
-  if (r && r.error) throw new Error(r.error);
-}
 
 /* rpcd 的 setInitAction / rc.init 是异步派发：调用返回时 init 脚本可能还在后台跑。
    passwall 的 app.sh stop 会把命令行含 "passwall/" 的进程 kill -9（lua gen_config
@@ -418,7 +329,7 @@ async function initAction(name, action) {
    所以操作后轮询等 passwall 脚本进程收敛，开启时再确认核心进程已拉起。 */
 async function procAlive(pattern) {
   try {
-    const r = await ubus('luci', 'getProcessList', {}, true);
+    const r = await ubus('luci', 'getProcessList', {});
     return ((r && r.result) || []).some(
       p => String(p.COMMAND || '').indexOf(pattern) !== -1);
   } catch (_) { return false; }
@@ -426,7 +337,7 @@ async function procAlive(pattern) {
 async function waitPasswallQuiet(timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const busy = await procAlive('/etc/init.d/passwall')        /* init 脚本本体 */
+    const busy = await procAlive('/etc/init.d/passwall')
               || await procAlive('/usr/share/passwall/app.sh');
     if (!busy) return true;
     await new Promise(r => setTimeout(r, 500));
@@ -441,16 +352,16 @@ async function waitPasswallQuiet(timeoutMs) {
 async function applyService(name, to) {
   let section = null;
   try {
-    const r = await ubus('uci', 'get', { config: name }, true);
+    const r = await ubus('uci', 'get', { config: name });
     const vals = (r && r.values) || {};
     for (const k of Object.keys(vals)) {
       if (vals[k] && vals[k]['.type'] === 'global') { section = vals[k]['.name']; break; }
     }
-  } catch (_) { /* 读不到配置就退化为纯 start/stop */ }
+  } catch (_) {}
   if (section) {
     await ubus('uci', 'set', { config: name, section,
-      values: { enabled: to ? '1' : '0' } }, true);
-    await ubus('uci', 'apply', { rollback: false, timeout: 10 }, true);
+      values: { enabled: to ? '1' : '0' } });
+    await ubus('uci', 'apply', { rollback: false, timeout: 10 });
     await new Promise(r => setTimeout(r, 600));
     /* 走控制器 service（进程在跑时 start 自动映射为 restart） */
     await serviceAction(to ? 'start' : 'stop');
@@ -466,22 +377,10 @@ async function applyService(name, to) {
   }
 }
 
-/* 端口转发：uci set -> apply -> reload 防火墙，等价 LuCI 保存并应用。
-   注意：本机 acl.d 没有任何组授权 uci.commit（LuCI 也是服务端绕开的），
-   必须用 uci.apply（授权内，等效 commit + 触发生效） */
-async function applyRedirect(name, to) {
-  const st = S.status[name];
-  if (!st || !st.section) throw new Error('找不到名为 ' + name + ' 的端口转发规则');
-  await ubus('uci', 'set', { config: 'firewall', section: st.section,
-    values: { enabled: to ? '1' : '0' } }, true);
-  await ubus('uci', 'apply', { config: 'firewall', rollback: false, timeout: 10 }, true);
-  await initAction('firewall', 'reload');
-}
-
 /* 查服务：rc.list 的 enabled（只读自启位）与 running（可能有） */
 async function queryService(name, data) {
   try {
-    const r = data || await ubus('rc', 'list', { name }, true);
+    const r = data || await ubus('rc', 'list', { name });
     const e = r && r[name];
     if (!e) return { ok: false, running: null, enabled: null };
     const has = (typeof e.running === 'number' || typeof e.running === 'boolean');
@@ -502,7 +401,7 @@ async function queryService(name, data) {
    passwall 的 xray/chinadns-ng 都在 /tmp/etc/passwall/bin/ 下，服务停了进程消失 */
 async function queryProc(pattern, data) {
   try {
-    const r = data || await ubus('luci', 'getProcessList', {}, true);
+    const r = data || await ubus('luci', 'getProcessList', {});
     const list = (r && r.result) || [];
     /* 前缀匹配而非子串：核心进程的 COMMAND 都以该路径开头，
        用 indexOf 会被 `ls /tmp/etc/passwall/bin`、`cat .../xray` 这类
@@ -516,62 +415,22 @@ async function queryProc(pattern, data) {
   }
 }
 
-/* 在 firewall 配置里按规则名找 redirect 节 */
-function findRedirect(fw, name) {
-  if (!fw) return null;
-  for (const key of Object.keys(fw)) {
-    const sec = fw[key];
-    if (sec && sec['.type'] === 'redirect' && sec.name === name) return sec;
-  }
-  return null;
-}
-
-/* 只查询单个条目的状态（开关操作完成后用，不整页 refresh）：
-   服务 = rc.list + 进程匹配；端口转发 = 按已知 section 精确 uci.get（首次未知时全量兜底） */
+/* 只查询单个服务的状态（开关操作完成后用，不整页 refresh）：rc.list + 进程匹配 */
 async function queryItemStatus(it) {
   const guess = loadGuess();
-  if (it.type === 'service') {
-    const p = S.rcAvailable ? await queryService(it.name)
-                            : { ok: false, running: null, enabled: null };
-    if (S.rcAvailable && !p.ok) S.rcAvailable = false;
-    const proc = it.pgrep ? await queryProc(it.pgrep) : null;
-    let on, source;
-    if (proc !== null && proc !== undefined) { on = proc; source = 'rpc'; }
-    else if (p.running !== null && p.running !== undefined) { on = p.running; source = 'rpc'; }
-    else if (hasOwn(guess, it.name)) { on = !!guess[it.name]; source = 'guess'; }
-    else { on = false; source = 'guess'; }
-    S.status[it.name] = {
-      on, source, enabled: p.enabled, known: p.ok || proc !== null, section: null,
-    };
-  } else {
-    const st0 = S.status[it.name];
-    let sec = null;
-    try {
-      if (st0 && st0.section) {                 /* 已知 section：单节查询 */
-        const r = await ubus('uci', 'get',
-          { config: 'firewall', section: st0.section }, true);
-        const v = r && r.values;
-        if (v && v['.type'] === 'redirect' && v.name === it.name) sec = v;
-      }
-      if (!sec) {                               /* 未知/校验不符：全量兜底 */
-        const r = await ubus('uci', 'get', { config: 'firewall' }, true);
-        sec = findRedirect((r && r.values) || r, it.name);
-      }
-    } catch (_) { /* 查询失败保持原状态 */ }
-    if (sec) {
-      const en = sec.enabled;
-      S.status[it.name] = {
-        on: (en === undefined || en === '' || en === '1' || en === 1 || en === true),
-        source: 'rpc', enabled: null, known: true, section: sec['.name'] || st0.section,
-      };
-    } else if (!st0 || !st0.known) {
-      S.status[it.name] = { on: false, source: 'none', enabled: null, known: false, section: null };
-    }
-  }
+  const p = S.rcAvailable ? await queryService(it.name)
+                          : { ok: false, running: null, enabled: null };
+  if (S.rcAvailable && !p.ok) S.rcAvailable = false;
+  const proc = it.pgrep ? await queryProc(it.pgrep) : null;
+  let on, source;
+  if (proc !== null && proc !== undefined) { on = proc; source = 'rpc'; }
+  else if (p.running !== null && p.running !== undefined) { on = p.running; source = 'rpc'; }
+  else if (hasOwn(guess, it.name)) { on = !!guess[it.name]; source = 'guess'; }
+  else { on = false; source = 'guess'; }
+  S.status[it.name] = { on, source, enabled: p.enabled, known: p.ok || proc !== null };
   return S.status[it.name];
 }
 
-/* ==================== 登录 ==================== */
 async function login() {
   const user = $('user').value.trim() || 'root';
   const pass = $('pass').value;
@@ -596,13 +455,13 @@ async function login() {
     const ct = (chk.headers.get('content-type') || '').toLowerCase();
     let chkData = null;
     if (chk.status === 200 && ct.indexOf('json') !== -1) {
-      try { chkData = await chk.json(); } catch (e) { /* 非法响应按登录失败处理 */ }
+      try { chkData = await chk.json(); } catch (e) {}
     }
     if (!chkData || !chkData.ok) throw new Error('登录失败，检查用户名密码');
 
     S.loggedIn = true;
-    showPanel();                  /* 先切加载态，refresh 完成后转主面板 */
-    await refresh(chkData);       /* 复用探测数据，不再二次请求 state */
+    showPanel();
+    await refresh(chkData);
     $('pass').value = '';
     startPolling();
   } catch (e) {
@@ -617,8 +476,8 @@ function forceLogout(msg) {
   S.loggedIn = false;
   S.status = {};
   stopPolling();
-  panelReady = false;                /* 下次登录重新走加载占位 */
-  document.querySelectorAll('.ipap-modal.show').forEach(m => m.classList.remove('show'));  /* 登出关闭审批/黑名单弹层 */
+  panelReady = false;
+  document.querySelectorAll('.ipap-modal.show').forEach(m => m.classList.remove('show'));
   showView('login');
   showErr(msg);
 }
@@ -731,7 +590,7 @@ function buildDevices(leases, hints) {
     const v4s = (h.ipaddrs || []);
     const v6s = (h.ip6addrs || [])
       .filter(a => !/^fe80/i.test(a) && !/^fd/i.test(a));
-    if (!v4s.length && !v6s.length) return;    /* 空记录：跳过 */
+    if (!v4s.length && !v6s.length) return;
     const d = get(mac.toUpperCase());
     d.mac = d.mac || mac.toUpperCase();
     if (h.name && !d.name) d.name = String(h.name).replace(/\.lan$/, '');
@@ -748,7 +607,7 @@ function buildDevices(leases, hints) {
     if (n && d.mac && !byName.has(n)) byName.set(n, d);
   });
   map.forEach((d, k) => {
-    if (d.mac) return;                      /* 有 MAC 的条目本身就是主条目 */
+    if (d.mac) return;
     const t = byName.get(norm(d.name));
     if (!t || t === d) return;
     d.v4.forEach(ip => put(t.v4, ip));
@@ -766,7 +625,6 @@ function buildDevices(leases, hints) {
     });
 }
 
-/* ==================== 状态刷新与渲染 ==================== */
 /* prefetched：首屏探测/登录校验时已经取到的 state 数据，直接复用，
    避免刚进面板就重复请求同一批数据（首次加载原本会打两次 state） */
 async function refresh(prefetched) {
@@ -799,7 +657,7 @@ async function refresh(prefetched) {
   if (st.board) S.board = st.board;
   S.sysinfo = st.sysinfo || null;
 
-  /* WAN 地址由后端算好（v4/v6/dev）；本机地址已由后端从 hints 里剔除 */
+  /* WAN 地址由后端算好（v4/v6/dev） */
   S.net = st.net || null;
 
   /* 磁盘：系统盘（/overlay，兜底 /）+ 实体块设备挂载（/data、外接 USB 盘等）。
@@ -830,37 +688,33 @@ async function refresh(prefetched) {
   S.rate = st.rate || null;
 
   /* 在线设备：租约（v4/v6）与邻居表合并去重成设备列表，卡片数字与明细同源。
-     v6 只保留全局地址（fe80/fd 不计），路由器本机地址剔除。 */
+     v6 只保留全局地址（fe80/fd 不计）。 */
   S.devices = buildDevices(st.leases, st.hints);
 
   ITEMS.forEach(it => {
-    if (it.type === 'service') {
-      const p = probeByName[it.name];
-      const proc = procByName[it.name];
-      let on, source;
-      if (proc !== null && proc !== undefined) {
-        on = proc; source = 'rpc';               /* pgrep 实测进程，最可信 */
-      } else if (p.running !== null && p.running !== undefined) {
-        on = p.running; source = 'rpc';
-      } else if (hasOwn(guess, it.name)) {
-        on = !!guess[it.name]; source = 'guess';
-      } else {
-        on = false; source = 'guess';   /* 无依据时保守视为已停止 */
-      }
-      S.status[it.name] = {
-        on, source, enabled: p.enabled, known: p.ok || proc !== null, section: null,
-      };
+    const p = probeByName[it.name];
+    const proc = procByName[it.name];
+    let on, source;
+    if (proc !== null && proc !== undefined) {
+      on = proc; source = 'rpc';               /* pgrep 实测进程，最可信 */
+    } else if (p.running !== null && p.running !== undefined) {
+      on = p.running; source = 'rpc';
+    } else if (hasOwn(guess, it.name)) {
+      on = !!guess[it.name]; source = 'guess';
+    } else {
+      on = false; source = 'guess';   /* 无依据时保守视为已停止 */
     }
+    S.status[it.name] = { on, source, enabled: p.enabled, known: p.ok || proc !== null };
   });
-  if (window.ipapCountSync) { try { await window.ipapCountSync(); } catch (e){ if (e instanceof SessionError) throw e; } }   /* 审批数量随面板刷新同步 */
-  if (window.denyCountSync) { try { await window.denyCountSync(); } catch (e){ if (e instanceof SessionError) throw e; } }   /* 黑名单数量同上 */
+  if (window.ipapCountSync) { try { await window.ipapCountSync(); } catch (e){ if (e instanceof SessionError) throw e; } }
+  if (window.denyCountSync) { try { await window.denyCountSync(); } catch (e){ if (e instanceof SessionError) throw e; } }
   draw();
   /* 首屏数据已就绪：从加载态切到主面板（内容自己 viewIn 浮入），再记录真实高度 */
   if (!panelReady) {
     panelReady = true;
     showView('panel');
   }
-  savePanelHeight();                        /* 记录真实高度，供下次加载态占位对齐 */
+  savePanelHeight();
   if (S.loggedIn) startPolling();           /* 刷新完就重置锚点：显示与实际触发同一个时间基准 */
 }
 
@@ -954,9 +808,7 @@ function drawSysInfo() {
 function draw() {
   $('list').innerHTML = ITEMS.map(it => {
     const st = S.status[it.name] || { on: false, source: 'guess', enabled: null, known: false };
-    const label = st.known ? (st.on ? (it.type === 'service' ? '运行中' : '已启用')
-                                    : (it.type === 'service' ? '已停止' : '已禁用'))
-                           : '未找到';
+    const label = st.known ? (st.on ? '运行中' : '已停止') : '未找到';
     const cls = !st.known ? ' warn'
       : (st.source === 'guess' ? ' guess' : (st.on ? '' : ' off'));
     const tip = st.known && st.source === 'guess'
@@ -994,16 +846,11 @@ async function toggle(name, el) {
     badgeEl.textContent = '处理中…';
   }
   try {
-    if (it.type === 'service') {
-      await applyService(name, to);      /* 只发 start 或 stop */
-      saveGuess(name, to);
-    } else {
-      await applyRedirect(name, to);     /* uci set -> apply -> reload */
-    }
+    await applyService(name, to);        /* 只发 start 或 stop */
+    saveGuess(name, to);
     await queryItemStatus(it);           /* 只查本条目的结果 */
     draw();
-    const verb = it.type === 'service' ? (to ? '启动' : '停止') : (to ? '启用' : '禁用');
-    toast(`${name} 已${verb}`);
+    toast(`${name} 已${to ? '启动' : '停止'}`);
   } catch (e) {
     if (!(e instanceof SessionError)) toast('操作失败：' + e.message, true);
     try { await refresh(); } catch (_) { /* 会话已失效 */ }
@@ -1014,7 +861,6 @@ async function toggle(name, el) {
   }
 }
 
-/* ==================== 轮询 ==================== */
 /* 只有一条计时器：倒计时和实际刷新共用同一个锚点 nextRefreshAt，
    到点即由 tickNext 发请求。以前是「1s 计时器管显示 + 30s setInterval 管刷新」，
    两条计时器相位会漂移（锚点还要等刷新结束才重设），于是出现「还写着 1 秒后刷新，后台已经在刷新」 */
@@ -1077,7 +923,6 @@ document.addEventListener('visibilitychange', () => {
   });
 });
 
-/* ==================== 通用 ==================== */
 let tTimer;
 function toast(m, err) {
   const t = $('toast'); t.textContent = m;
@@ -1087,7 +932,6 @@ function toast(m, err) {
   tTimer = setTimeout(() => t.classList.remove('show'), 2400);
 }
 
-/* ==================== 设备明细弹层 ==================== */
 function openDevices() {
   if (!S.devices) { toast('设备信息尚未获取，稍后重试', true); return; }
   const list = S.devices;
@@ -1112,7 +956,6 @@ function openDevices() {
 }
 function closeDevices() { $('devModal').classList.remove('show'); }
 
-/* ==================== 初始化 ==================== */
 /* 会话来源：LuCI sysauth cookie（浏览器同源自动携带）。
    首屏固定先显示「正在检测登录状态」，用一次 state 请求探测；
    检测完再决定进面板还是登录框，至少停留 BOOT_MIN_MS 避免一帧闪过。 */
@@ -1145,7 +988,7 @@ async function bootstrap() {
     const ct = (res.headers.get('content-type') || '').toLowerCase();
     if (res.status === 200 && ct.indexOf('json') !== -1) {
       const j = await res.json();
-      if (j.ok) probe = j;              /* 探测成功的数据留着给 refresh 用 */
+      if (j.ok) probe = j;
     }
   } catch (e) { probe = null; }
   if (probe) {
@@ -1161,7 +1004,7 @@ async function bootstrap() {
 }
 
 (function init() {
-  applyBootHeight();                        /* 检测态框体先对齐主面板高度 */
+  applyBootHeight();
   window.addEventListener('resize', () => { if (!panelReady) applyBootHeight(); });
   $('btnLogin').addEventListener('click', login);
   $('pass').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
@@ -1174,7 +1017,6 @@ async function bootstrap() {
     const sw = e.target.closest('.sw');
     if (sw) { e.preventDefault(); toggle(sw.dataset.name, sw); }
   });
-  /* 在线设备卡片 -> 明细弹层 */
   $('sysinfo').addEventListener('click', e => {
     if (e.target.closest('.cell[data-act="devices"]')) openDevices();
     if (e.target.closest('.cell[data-act="ipapprove"]') && window.ipapOpen) ipapOpen();
@@ -1182,7 +1024,7 @@ async function bootstrap() {
   });
   $('devClose').addEventListener('click', closeDevices);
   $('devModal').addEventListener('click', e => {
-    if (e.target.id === 'devModal') closeDevices();       /* 点遮罩关闭 */
+    if (e.target.id === 'devModal') closeDevices();
   });
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closeDevices();
@@ -1196,7 +1038,6 @@ async function bootstrap() {
   });
 })();
 </script>
-<!-- ============ IP 审批弹层（面板卡片点击弹出，复用 LuCI 会话鉴权） ============ -->
 <style>
   .ipap-modal{position:fixed;inset:0;background:rgba(8,12,20,.72);display:none;
     align-items:center;justify-content:center;padding:20px;z-index:50}
@@ -1218,9 +1059,13 @@ async function bootstrap() {
   .ipap-modal td .btns{display:flex;gap:8px}
   .ipap-modal td button.ok,.ipap-modal td button.no{margin:0;padding:8px 18px;font-size:14px;border-radius:8px;min-width:72px}
   .ipap-modal .ipap-empty{color:var(--muted);font-size:13px;padding:8px 0}
-  .ipap-modal .ipap-search{margin:10px 0 4px}
+  .ipap-modal .ipap-search{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 0 4px}
   .ipap-modal .ipap-search input{width:100%;max-width:320px;padding:7px 10px;font-size:13px;background:transparent;
     border:1px solid var(--line);border-radius:8px;margin:0;color:inherit}
+  .ipap-modal .ipap-fams{display:flex;gap:6px}
+  .ipap-modal button.ipap-fam{margin:0;padding:6px 12px;font-size:12px;border-radius:8px;
+    border:1px solid var(--line);background:transparent;color:var(--muted)}
+  .ipap-modal button.ipap-fam.on{background:rgba(79,140,255,.16);border-color:var(--blue);color:var(--blue)}
   .ipap-modal .ipap-msg{font-size:12px;color:var(--blue);margin:6px 0;min-height:14px}
   .ipap-modal .ipap-pager{display:flex;align-items:center;justify-content:center;gap:12px;padding:8px 0 2px;font-size:12px;color:var(--muted)}
   .ipap-modal .ipap-pager button.pg{margin:0}
@@ -1252,7 +1097,6 @@ async function bootstrap() {
   </div>
 </div>
 
-<!-- ============ IP 黑名单弹层（与审批弹层共用样式，复用 LuCI 会话鉴权） ============ -->
 <div id="denyModal" class="ipap-modal">
   <div class="modal-box">
     <div class="modal-head">
@@ -1261,7 +1105,14 @@ async function bootstrap() {
     </div>
     <div class="modal-body">
       <div style="font-size:12px;color:var(--muted);margin-top:8px">名单内 IP 被防火墙永久丢弃（INPUT / FORWARD 均生效）。移除后立即恢复，该 IP 再连未审批端口会重新进入审批队列。</div>
-      <div class="ipap-search"><input id="deny-q" placeholder="按 IP 搜索" onblur="denyFilter()" onkeydown="if(event.key==='Enter')this.blur()"></div>
+      <div class="ipap-search">
+        <input id="deny-q" placeholder="按 IP 搜索" onblur="denyFilter()" onkeydown="if(event.key==='Enter')this.blur()">
+        <span class="ipap-fams">
+          <button type="button" class="ipap-fam on" data-fam="all" onclick="denySetFam('all')">全部</button>
+          <button type="button" class="ipap-fam" data-fam="v4" onclick="denySetFam('v4')">IPv4</button>
+          <button type="button" class="ipap-fam" data-fam="v6" onclick="denySetFam('v6')">IPv6</button>
+        </span>
+      </div>
       <div class="ipap-msg" id="deny-msg"></div>
       <div id="deny-body"><div class="ipap-empty">加载中…</div></div>
       <div class="ipap-batch" id="deny-batch">
@@ -1369,7 +1220,6 @@ async function bootstrap() {
     ipapBatchUI();
   };
 
-  /* 弹层内完整刷新（打开时用） */
   window.ipapRefresh = async function(){
     document.getElementById('ipap-msg').textContent = '';
     try{
@@ -1388,7 +1238,6 @@ async function bootstrap() {
     }catch(e){ modal.classList.remove('show'); }
   };
 
-  /* 轻量同步：面板 refresh 周期调用，只更新数量与缓存；弹层开着才重渲染 */
   window.ipapCountSync = async function(){
     try{
       const r = await fetch('/cgi-bin/luci/admin/ipapprove/run?action=list',{cache:'no-store'});
@@ -1405,7 +1254,6 @@ async function bootstrap() {
     }catch(e){ setCell('?'); }
   };
 
-  /* 打开/关闭弹层（面板卡片点击 / 关闭按钮 / 遮罩 / Escape） */
   window.ipapOpen = function(){
     document.getElementById('ipap-body').innerHTML = '<div class="ipap-empty">加载中…</div>';
     document.getElementById('ipap-msg').textContent = '';
@@ -1462,18 +1310,17 @@ async function bootstrap() {
     if (e.key === 'Escape' && modal.classList.contains('show')) ipapClose();
   });
 
-  /* 数量同步跟随面板自身的 30 秒刷新周期（refresh() 内调用 ipapCountSync），未登录不发请求 */
 })();
 </script>
 
 <script>
-/* ============ IP 黑名单弹层：读 denylist / 调 unban，共用审批弹层样式 ============ */
 (function(){
   const modal = document.getElementById('denyModal');
   const PAGE_SIZE = 10;
   let allRows = [];          // [{ ip, family }]
   let page = 1;
   let selected = new Set();
+  let fam = 'all';           // 分类筛选：all / v4 / v6
 
   window.denyBlockedCount = function(){ return allRows.length; };
 
@@ -1522,21 +1369,31 @@ async function bootstrap() {
   }
 
   function filteredRows(){
+    let rows = allRows;
+    if (fam !== 'all') rows = rows.filter(r => r.family === fam);
     const kw = (document.getElementById('deny-q').value || '').trim().toLowerCase();
-    if (!kw) return allRows;
-    return allRows.filter(r => (r.ip||'').toLowerCase().indexOf(kw) !== -1);
+    if (kw) rows = rows.filter(r => (r.ip||'').toLowerCase().indexOf(kw) !== -1);
+    return rows;
   }
   function totalPages(){ return Math.max(1, Math.ceil(filteredRows().length / PAGE_SIZE)); }
   window.denyFilter = function(){ page = 1; denyGo(1); };
+  window.denySetFam = function(f){
+    fam = f;
+    document.querySelectorAll('#denyModal .ipap-fam').forEach(b =>
+      b.classList.toggle('on', b.getAttribute('data-fam') === f));
+    page = 1; denyGo(1);
+  };
 
   window.denyGo = function(p){
     const body = document.getElementById('deny-body');
     const rowsAll = filteredRows();
     page = Math.min(Math.max(1, p), totalPages());
     document.getElementById('deny-count').textContent =
-      rowsAll.length ? (rowsAll.length===allRows.length ? '共 '+allRows.length+' 条' : '匹配 '+rowsAll.length+' / '+allRows.length+' 条') : '名单为空';
+      rowsAll.length ? (rowsAll.length===allRows.length ? '共 '+allRows.length+' 条' : '匹配 '+rowsAll.length+' / '+allRows.length+' 条')
+      : (allRows.length ? '该分类无条目' : '名单为空');
     if (!rowsAll.length) {
-      body.innerHTML = '<div class="ipap-empty">'+(allRows.length?'没有匹配该 IP 的记录。':'黑名单为空。')+'</div>';
+      body.innerHTML = '<div class="ipap-empty">'
+        +(!allRows.length ? '黑名单为空。' : (fam!=='all' ? '该分类下没有条目。' : '没有匹配的记录。'))+'</div>';
       batchUI(); return;
     }
     const start = (page-1)*PAGE_SIZE;
@@ -1579,7 +1436,6 @@ async function bootstrap() {
     catch(e){ document.getElementById('deny-body').innerHTML = '<div class="ipap-empty">加载失败：'+esc(String(e.message||e))+'</div>'; }
   };
 
-  /* 面板周期刷新只更新数量与缓存；弹层开着才重渲染 */
   window.denyCountSync = async function(){
     try {
       const r = await fetch('/cgi-bin/luci/admin/ipapprove/run?action=denylist', {cache:'no-store'});
