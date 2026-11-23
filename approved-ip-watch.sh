@@ -30,7 +30,7 @@ notify() {
     local stamp
     stamp=$(date '+%F %T')
     local pinfo=""
-    case "$port" in ''|'-') pinfo="" ;; *) pinfo="目标端口 $port · " ;; esac
+    case "$port" in ''|'-') pinfo="" ;; *) pinfo="目标端口 $port" ;; esac
 
     # 快捷按钮：HMAC 签名链接（30 分钟有效），无 QUICK_SECRET 时退回纯文本
     if [ -n "$QUICK_SECRET" ] && [ -n "$QUICK_URL" ]; then
@@ -42,11 +42,11 @@ notify() {
         uok="$QUICK_URL/cgi-bin/ip-approve-quick?a=approve&ip=$ip&ts=$qts&sign=$sa"
         uno="$QUICK_URL/cgi-bin/ip-approve-quick?a=deny&ip=$ip&ts=$qts&sign=$sd"
         curl -s -m 5 -H 'Content-Type: application/json' \
-            -d '{"msgtype":"actionCard","actionCard":{"title":"【待审批IP】'"$ip"'","text":"#### 【待审批IP】'"$ip"'\n\n'"$pinfo"'于 '"$stamp"' 探测进入待审批队列\n\n> 点下方按钮完成审批，链接 30 分钟内有效","hideAvatar":"0","btnOrientation":"1","btns":[{"title":"✅ 批准","actionURL":"'"$uok"'"},{"title":"🚫 拒绝","actionURL":"'"$uno"'"}]}}' \
+            -d '{"msgtype":"actionCard","actionCard":{"title":"【待审批IP】'"$ip"'","text":"#### 【待审批IP】'"$ip"'\n\n于 '"$stamp"' 探测进入待审批队列'"${pinfo:+ · $pinfo}"'\n\n> 点下方按钮完成审批，链接 30 分钟内有效","hideAvatar":"0","btnOrientation":"1","btns":[{"title":"✅ 批准","actionURL":"'"$uok"'"},{"title":"🚫 拒绝","actionURL":"'"$uno"'"}]}}' \
             "$url" >/dev/null
     else
         curl -s -m 5 -H 'Content-Type: application/json' \
-            -d '{"msgtype":"text","text":{"content":"【待审批IP】'"$ip"' '"${pinfo:+($pinfo)}"'于 '"$stamp"' 探测进入待审批队列，请及时审批"}}' \
+            -d '{"msgtype":"text","text":{"content":"【待审批IP】'"$ip"' 于 '"$stamp"' 探测进入待审批队列'"${pinfo:+（$pinfo）}"'，请及时审批"}}' \
             "$url" >/dev/null
     fi
 }
