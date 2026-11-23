@@ -1,0 +1,12 @@
+{
+	"admin/switchboard/run": {
+		"action": {
+			"type": "function",
+			"module": "luci.controller.admin.switchboard",
+			"function": "action_run"
+		},
+		"auth": {
+			"methods": [ "cookie:sysauth_https", "cookie:sysauth_http" ]
+		}
+	}
+}

@@ -26,8 +26,12 @@
   只写单个文件，不要写 /www/ 整个目录。-n / 恢复出厂一律清空，另存本地副本。
 
   原理：
-    uhttpd 内置 /ubus 前缀，页面与 LuCI 同源，JSON-RPC 直调 rpcd，
-    凭据复用 root 密码 session.login。无服务端、无跨域。
+    后端接口由本项目自带的 LuCI 控制器提供：
+      /cgi-bin/luci/admin/switchboard/run
+    dispatcher 用 sysauth cookie 自动鉴权（与 IP 审批同一套），
+    控制器内部用 ucode ubus.call 调 rpcd。前端不再持有 sid，
+    也不再直连 /ubus。控制器源码见项目
+    usr/share/ucode/luci/controller/admin/switchboard.uc。
 
   实机情况（2026-11-13 在 iStoreOS 24.10.8 上核实）：
     - /etc/config/rpcd 的 root login 节 read='*' write='*'，
@@ -61,14 +65,20 @@
                            等价于 LuCI 防火墙页勾选/取消「启用」并保存应用。
                            规则按 name 匹配 redirect 节，无对应规则显示「未找到」。
 
-  部署前核对：
-    ssh iStoreOS 'ls /etc/init.d/ | grep passwall'
-    LuCI「系统-启动项」能开关服务、「网络-防火墙-端口转发」能改规则，
-    则本页所用接口均可用。
+  部署：除本文件外，还需部署控制器与菜单（升级保住三处）：
+    scp usr/share/ucode/luci/controller/admin/switchboard.uc \
+      iStoreOS:/usr/share/ucode/luci/controller/admin/
+    scp usr/share/luci/menu.d/luci-app-switchboard.json \
+      iStoreOS:/usr/share/luci/menu.d/
+    ssh iStoreOS 'for f in /www/switch.html \
+      /usr/share/ucode/luci/controller/admin/switchboard.uc \
+      /usr/share/luci/menu.d/luci-app-switchboard.json; \
+      do echo $f >> /etc/sysupgrade.conf; done'
 
   安全：
-    本文件不鉴权，只暴露到内网或 VPN；别把 root 登录口裸奔公网。
-    token 存 sessionStorage，不随请求自动携带，天然不引入 CSRF 面。
+    接口由 LuCI dispatcher 的 sysauth cookie 鉴权，未登录返回 403；
+    控制器对 ubus 对象/方法做白名单限制，前端不持有 sid。
+    只暴露到内网或 VPN；别把 root 登录口裸奔公网。
 -->
 <style>
   :root{--bg:#0f1420;--panel:#171e2e;--line:#2a3550;--text:#e8edf7;--muted:#8a97b0;
@@ -277,15 +287,18 @@ const ITEMS = [
 ];
 
 const REFRESH_MS = 30000;
-const ZERO_SID = '00000000000000000000000000000000';
-const TOKEN_KEY = 'sw_tok';
+const API_URL = '/cgi-bin/luci/admin/switchboard/run';
 const GUESS_KEY = 'sw_guess';
+
+/* state 请求体：带上线 service 项名字，让后端把 rc.list 收窄为定向查询
+   （全量 rc.list {} 要扫所有 init 脚本，3s+；带 name 约 0.16s）。 */
+function stateBody() {
+  return { action: 'state', services: ITEMS.filter(i => i.type === 'service').map(i => i.name) };
+}
 
 /* ==================== 状态 ==================== */
 const S = {
-  token: null,
-  sessionLost: false,  /* 会话已失效标记：置位后 ubus 拒绝一切请求，避免过期后继续轮询接口 */
-  tokenFrom: null,     /* 'luci' = 复用 LuCI 会话；'self' = 本页自己登录 */
+  loggedIn: false,     /* LuCI sysauth cookie 有效（接口探测通过） */
   status: {},          /* name -> { on, source, enabled, known, section } */
   busy: false,
   rcAvailable: true,
@@ -343,47 +356,35 @@ function saveGuess(name, running) {
   try { localStorage.setItem(GUESS_KEY, JSON.stringify(g)); } catch (_) {}
 }
 
-/* ==================== ubus 调用 ==================== */
-/* soft=true：权限/对象不可用不当作会话失效，只抛普通错误 */
+/* ==================== 自有控制器接口 ==================== */
+/* 所有后端调用统一走 /cgi-bin/luci/admin/switchboard/run，
+   会话由 LuCI dispatcher 的 sysauth cookie 鉴权，前端不再持有 sid。
+   未登录（403 + x-luci-login-required）即回登录页并中止调用链。 */
+async function api(action, data) {
+  if (!S.loggedIn) throw new SessionError('会话已失效');
+  const res = await fetch(API_URL, {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({ action }, data || {})),
+  });
+  if (res.status === 403 || res.headers.get('x-luci-login-required')) {
+    forceLogout('会话已过期，请重新登录');
+    throw new SessionError('会话已失效');
+  }
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  if (ct.indexOf('json') === -1) {
+    forceLogout('会话已过期，请重新登录');
+    throw new SessionError('会话已失效');
+  }
+  const j = await res.json();
+  if (!j.ok) throw new Error(j.error || '接口调用失败');
+  return j;
+}
+
+/* 兼容原来的调用点：搬到控制器 call 动作，返回值与 ubus 原始响应同构 */
 async function ubus(obj, mtd, params, soft) {
-  /* 会话已失效：不再发任何接口请求，直接中止 */
-  if (S.sessionLost) throw new SessionError('会话已失效');
-  let data = null;
-  try {
-    const res = await fetch('/ubus', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0', method: 'call', id: 1,
-        params: [S.token, obj, mtd, params || {}],
-      }),
-    });
-    const ct = (res.headers.get('content-type') || '').toLowerCase();
-    if (ct.indexOf('json') !== -1) data = await res.json();
-  } catch (_) { data = null; }
-  if (!data) {
-    /* 非 JSON 响应（会话过期被网关拦截等）：一律按会话失效处理，不展示原始报文 */
-    if (!soft) forceLogout('会话已过期，请重新登录');
-    throw new SessionError('会话已失效');
-  }
-  if (data.error) {
-    /* -32002 Access denied：JSON-RPC 层拒绝 = sid 无效/过期（rpcd 会话超时）。
-       直接回登录页并抛 SessionError，让调用链立即中止，不再请求后续接口 */
-    if (data.error.code === -32002) {
-      forceLogout('会话已过期，请重新登录');
-      throw new SessionError('会话已失效');
-    }
-    throw new Error(data.error.message || 'ubus 调用失败');
-  }
-  const r = data.result || [];
-  if (r[0] === 6) {
-    /* UBUS_STATUS_PERMISSION_DENIED：token 失效或该对象未授权 */
-    if (soft) throw new Error('权限不足或对象不可用');
-    forceLogout('会话已失效或权限不足，请重新登录');
-    throw new SessionError('会话已失效');
-  }
-  if (r[0] !== 0) throw new Error('ubus 错误码 ' + r[0]);
-  return r[1];
+  const j = await api('call', { o: obj, m: mtd, p: params || {} });
+  return j.data;
 }
 
 /*
@@ -469,23 +470,10 @@ async function applyRedirect(name, to) {
   await initAction('firewall', 'reload');
 }
 
-/* 探活：sid 有效且对 rc.list 有权限才采用（用于恢复本页自己的 ubus 会话） */
-async function probeToken(tok) {
-  const saved = S.token;
-  S.token = tok;
-  try {
-    await ubus('rc', 'list', { name: ITEMS[0].name }, true);
-    return true;
-  } catch (_) {
-    S.token = saved;
-    return false;
-  }
-}
-
 /* 查服务：rc.list 的 enabled（只读自启位）与 running（可能有） */
-async function queryService(name) {
+async function queryService(name, data) {
   try {
-    const r = await ubus('rc', 'list', { name }, true);
+    const r = data || await ubus('rc', 'list', { name }, true);
     const e = r && r[name];
     if (!e) return { ok: false, running: null, enabled: null };
     const has = (typeof e.running === 'number' || typeof e.running === 'boolean');
@@ -504,9 +492,9 @@ async function queryService(name) {
 /* 真实运行态：luci.getProcessList（明确在 ACL 授权里；file.exec 虽列在
    授权数组却实际被拒）拉进程列表，按路径特征匹配核心进程。
    passwall 的 xray/chinadns-ng 都在 /tmp/etc/passwall/bin/ 下，服务停了进程消失 */
-async function queryProc(pattern) {
+async function queryProc(pattern, data) {
   try {
-    const r = await ubus('luci', 'getProcessList', {}, true);
+    const r = data || await ubus('luci', 'getProcessList', {}, true);
     const list = (r && r.result) || [];
     /* 前缀匹配而非子串：核心进程的 COMMAND 都以该路径开头，
        用 indexOf 会被 `ls /tmp/etc/passwall/bin`、`cat .../xray` 这类
@@ -584,49 +572,42 @@ async function login() {
   const btn = $('btnLogin');
   btn.disabled = true; btn.textContent = '登录中…';
   try {
-    const res = await fetch('/ubus', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0', method: 'call', id: 1,
-        params: [ZERO_SID, 'session', 'login', { username: user, password: pass }],
-      }),
+    /* 只建立 LuCI 会话：POST 登录端点，由浏览器种下 HttpOnly sysauth cookie。
+       本页和 IP 审批卡片共用这个会话，不再自己申请 ubus sid。 */
+    await fetch('/cgi-bin/luci/', {
+      method: 'POST', credentials: 'same-origin',
+      body: new URLSearchParams({ luci_username: user, luci_password: pass }),
     });
-    const data = await res.json();
-    const r = data.result || [];
-    if (data.error || r[0] !== 0 || !r[1] || !r[1].ubus_rpc_session) {
-      throw new Error('登录失败，检查用户名密码');
+    /* LuCI 密码错误时也返回 200（登录页），用一次裸探测确认会话真的建起来，
+       免得带着未登录态进面板再被逐个接口打回。 */
+    const chk = await fetch(API_URL, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(stateBody()),
+    });
+    const ct = (chk.headers.get('content-type') || '').toLowerCase();
+    let chkData = null;
+    if (chk.status === 200 && ct.indexOf('json') !== -1) {
+      try { chkData = await chk.json(); } catch (e) { /* 非法响应按登录失败处理 */ }
     }
-    S.token = r[1].ubus_rpc_session;
-    S.sessionLost = false;
+    if (!chkData || !chkData.ok) throw new Error('登录失败，检查用户名密码');
+
+    S.loggedIn = true;
+    showPanel();                  /* 先切加载态，refresh 完成后转主面板 */
+    await refresh(chkData);       /* 复用探测数据，不再二次请求 state */
     $('pass').value = '';
-    S.tokenFrom = 'self';
-    sessionStorage.setItem(TOKEN_KEY, S.token);
-    /* 同步建立 LuCI 会话：审批卡片走 /cgi-bin/luci 需要 sysauth cookie，
-       用同样的凭据 POST LuCI 登录端点，由浏览器自动种 HttpOnly cookie。
-       失败不阻塞面板登录（卡片未登录时会自行隐藏）。 */
-    try{
-      await fetch('/cgi-bin/luci/', {
-        method: 'POST', credentials: 'same-origin',
-        body: new URLSearchParams({ luci_username: user, luci_password: pass })
-      });
-    }catch(e2){}
-    showPanel();
-    await refresh();
     startPolling();
   } catch (e) {
-    showErr(e instanceof TypeError ? '无法连接路由器 /ubus（确认是同源 HTTPS 访问）' : e.message);
+    S.loggedIn = false;
+    showErr(e instanceof TypeError ? '无法连接路由器（确认是同源访问）' : e.message);
   } finally {
     btn.disabled = false; btn.textContent = '登 录';
   }
 }
 
 function forceLogout(msg) {
-  S.token = null;
-  S.sessionLost = true;
-  S.tokenFrom = null;
+  S.loggedIn = false;
   S.status = {};
-  sessionStorage.removeItem(TOKEN_KEY);
   stopPolling();
   panelReady = false;                /* 下次登录重新走加载占位 */
   document.querySelectorAll('#ipapModal.show').forEach(m => m.classList.remove('show'));  /* 登出关闭审批弹层 */
@@ -779,18 +760,28 @@ function buildDevices(leases, hints) {
 }
 
 /* ==================== 状态刷新与渲染 ==================== */
-async function refresh() {
+/* prefetched：首屏探测/登录校验时已经取到的 state 数据，直接复用，
+   避免刚进面板就重复请求同一批数据（首次加载原本会打两次 state） */
+async function refresh(prefetched) {
   const guess = loadGuess();
+
+  /* 一次 state 请求取回面板全部只读数据；业务判定（降级 / guess / 设备合并）
+     仍留在本页，后端只吐原始结构。速率差分已在后端算好。 */
+  const st = prefetched || await api('state', { services: stateBody().services });
+  const rcAll = st.rc || {};
+  const procsRaw = { result: st.procs || [] };
+  const netRaw = { interface: st.net || [] };
+  const mountsRaw = { result: st.mounts || [] };
 
   /* 服务：rc.list（enabled 只读；running 仅有 procd 脚本才有），
      配了 pgrep 的项另跑真实进程检测，结果优先 */
   const svcItems = ITEMS.filter(i => i.type === 'service');
   const probes = S.rcAvailable
-    ? await Promise.all(svcItems.map(i => queryService(i.name)))
+    ? await Promise.all(svcItems.map(i => queryService(i.name, rcAll)))
     : svcItems.map(() => ({ ok: false, running: null, enabled: null }));
   if (S.rcAvailable && !probes.some(p => p.ok)) S.rcAvailable = false;
   const procProbes = await Promise.all(
-    svcItems.map(i => i.pgrep ? queryProc(i.pgrep) : Promise.resolve(null)));
+    svcItems.map(i => i.pgrep ? queryProc(i.pgrep, procsRaw) : Promise.resolve(null)));
   const probeByName = {};
   const procByName = {};
   svcItems.forEach((it, i) => {
@@ -798,28 +789,16 @@ async function refresh() {
     procByName[it.name] = procProbes[i];
   });
 
-  /* 端口转发：firewall 配置实时可读 */
-  let fw = null;
-  try {
-    const r = await ubus('uci', 'get', { config: 'firewall' }, true);
-    fw = (r && r.values) ? r.values : (r || {});
-  } catch (e) { if (e instanceof SessionError) throw e; }
-
-  /* 运行状态：system.info（授权内）+ system.board（取一次缓存） */
-  try {
-    const [info, board] = await Promise.all([
-      ubus('system', 'info', {}, true),
-      S.board ? Promise.resolve(S.board) : ubus('system', 'board', {}, true),
-    ]);
-    if (board) S.board = board;
-    S.sysinfo = info || null;
-  } catch (e) { if (e instanceof SessionError) throw e; S.sysinfo = null; }
+  /* 端口转发 / 运行状态：均由 state 一并返回 */
+  const fw = st.fw || {};
+  if (st.board) S.board = st.board;
+  S.sysinfo = st.sysinfo || null;
 
   /* WAN 地址：network.interface dump（授权内，LuCI 状态页同款）。
      IPv4 取默认路由（0.0.0.0）所在接口；IPv6 取全局单播地址（2/3 开头，
      排除 fe80 链路本地与 fd ULA），优先 wan_6 这类带默认 v6 路由的接口 */
-  try {
-    const r = await ubus('network.interface', 'dump', {}, true);
+  {
+    const r = netRaw;
     const ifs = (r && r.interface) || [];
     const up = ifs.filter(i => i.up);
     const v4if = up.find(i => (i.route || []).some(x => x.target === '0.0.0.0'))
@@ -843,12 +822,12 @@ async function refresh() {
       (i['ipv6-address'] || []).forEach(a => local.add(String(a.address).split('/')[0]));
     });
     S.localAddrs = local;
-  } catch (e) { if (e instanceof SessionError) throw e; S.net = null; S.localAddrs = null; }
+  }
 
   /* 磁盘：系统盘（/overlay，兜底 /）+ 实体块设备挂载（/data、外接 USB 盘等）。
      跳过虚拟/只读/临时挂载（rom/boot/tmp/dev/mnt tmpfs）；used = size - free */
-  try {
-    const r = await ubus('luci', 'getMountPoints', {}, true);
+  {
+    const r = mountsRaw;
     const ms = (r && r.result) || [];
     const skip = new Set(['/rom', '/boot', '/tmp', '/dev', '/mnt']);
     const seen = new Set();
@@ -867,33 +846,14 @@ async function refresh() {
       }
     }
     S.disk = disks.length ? disks : null;
-  } catch (e) { if (e instanceof SessionError) throw e; S.disk = null; }
+  }
 
-  /* WAN 速率：计数器累积值取最后两个样本差分（dt 与采样间隔自适应，
-     字节计数溢出/回绕时放弃本次） */
-  try {
-    const dev = S.net && S.net.dev;
-    if (!dev) { S.rate = null; } else {
-      const r = await ubus('luci', 'getRealtimeStats', { mode: 'interface', device: dev }, true);
-      const s = (r && r.result) || [];
-      if (s.length >= 2) {
-        const a = s[s.length - 2], b = s[s.length - 1];
-        const dt = b[0] - a[0];
-        const rx = b[1] - a[1], tx = b[3] - a[3];
-        S.rate = (dt > 0 && rx >= 0 && tx >= 0) ? { rx: rx / dt, tx: tx / dt } : null;
-      } else { S.rate = null; }
-    }
-  } catch (e) { if (e instanceof SessionError) throw e; S.rate = null; }
+  /* WAN 速率：后端已在 state 里用最后两个采样点差分算好 */
+  S.rate = st.rate || null;
 
   /* 在线设备：租约（v4/v6）与邻居表合并去重成设备列表，卡片数字与明细同源。
      v6 只保留全局地址（fe80/fd 不计），路由器本机地址剔除。 */
-  try {
-    const [leases, hints] = await Promise.all([
-      ubus('luci-rpc', 'getDHCPLeases', {}, true).catch(e => { if (e instanceof SessionError) throw e; return null; }),
-      ubus('luci-rpc', 'getHostHints', {}, true).catch(e => { if (e instanceof SessionError) throw e; return null; }),
-    ]);
-    S.devices = buildDevices(leases, hints);
-  } catch (e) { if (e instanceof SessionError) throw e; S.devices = null; }
+  S.devices = buildDevices(st.leases, st.hints);
 
   ITEMS.forEach(it => {
     if (it.type === 'service') {
@@ -933,7 +893,7 @@ async function refresh() {
     showView('panel');
   }
   savePanelHeight();                        /* 记录真实高度，供下次加载态占位对齐 */
-  if (S.token) startPolling();              /* 刷新完就重置锚点：显示与实际触发同一个时间基准 */
+  if (S.loggedIn) startPolling();           /* 刷新完就重置锚点：显示与实际触发同一个时间基准 */
 }
 
 function fmtUptime(sec) {
@@ -1076,7 +1036,7 @@ async function toggle(name, el) {
   } finally {
     if (el) el.classList.remove('busy');
     S.busy = false;
-    if (S.token) startPolling();         /* 操作完重新计时，别让用户刚动完就被刷一遍 */
+    if (S.loggedIn) startPolling();      /* 操作完重新计时，别让用户刚动完就被刷一遍 */
   }
 }
 
@@ -1099,7 +1059,7 @@ function setNextTxt(el, t) {
 function tickNext() {
   const el = $('nextIn');
   if (!el) return;
-  if (!S.token) { setNextTxt(el, ''); return; }
+  if (!S.loggedIn) { setNextTxt(el, ''); return; }
   if (document.hidden) { setNextTxt(el, '刷新已暂停'); return; }
   if (S.busy) { setNextTxt(el, '操作中…'); return; }
   if (refreshing) { setNextTxt(el, '正在刷新…'); return; }
@@ -1133,7 +1093,7 @@ function stopPolling() {
   lastNextTxt = null;
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden || !S.token || S.busy || refreshing) return;
+  if (document.hidden || !S.loggedIn || S.busy || refreshing) return;
   refreshing = true;                        /* 切回前台立刻补一次，走同一条刷新通路 */
   refresh().catch(e => {
     if (!(e instanceof SessionError)) toast('刷新失败：' + e.message, true);
@@ -1179,9 +1139,9 @@ function openDevices() {
 function closeDevices() { $('devModal').classList.remove('show'); }
 
 /* ==================== 初始化 ==================== */
-/* 会话来源优先级：LuCI cookie > 本页 sessionStorage > 登录框。
-   首屏固定先显示「正在检测登录状态」，检测完再决定进面板还是登录框；
-   检测太快（缓存命中）也至少停留 BOOT_MIN_MS，避免一帧闪过的突兀感。 */
+/* 会话来源：LuCI sysauth cookie（浏览器同源自动携带）。
+   首屏固定先显示「正在检测登录状态」，用一次 state 请求探测；
+   检测完再决定进面板还是登录框，至少停留 BOOT_MIN_MS 避免一帧闪过。 */
 const BOOT_MIN_MS = 450;
 const waitBootMin = async t0 => {
   const d = BOOT_MIN_MS - (Date.now() - t0);
@@ -1199,16 +1159,29 @@ function readCores() {
 async function bootstrap() {
   const t0 = Date.now();
   readCores();
-  const own = sessionStorage.getItem(TOKEN_KEY);
-  if (own && await probeToken(own)) {
-    S.token = own; S.tokenFrom = 'self';
+  /* 直接探测控制器：有 LuCI cookie 就能进面板，没有则静默回登录框。
+     这里不调 api()，避免从未登录过的首屏误报「会话已过期」。 */
+  let probe = null;
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(stateBody()),
+    });
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (res.status === 200 && ct.indexOf('json') !== -1) {
+      const j = await res.json();
+      if (j.ok) probe = j;              /* 探测成功的数据留着给 refresh 用 */
+    }
+  } catch (e) { probe = null; }
+  if (probe) {
+    S.loggedIn = true;
     await waitBootMin(t0);
     showPanel();
-    await refresh();
+    await refresh(probe);
     startPolling();
     return;
   }
-  /* 本页会话不可用：检测结束，切到登录框 */
   await waitBootMin(t0);
   showView('login');
 }
