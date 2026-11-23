@@ -8,9 +8,9 @@ DING_SECRET='SECxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # 需要走审批的端口（空格分隔，fw4 会编译为端口集合）
 # 留空 = 该协议族不创建审批规则，流量走 wan 兜底拒绝（不审批）
-APPROVE_PORT='50000 56666 56667 56680'
+APPROVE_PORT='50000 56680 30080'
 # IPv6 规则端口（与 APPROVE_PORT 独立，留空 = v6 审批停用）
-APPROVE_PORT6='50000 56666 56667 56680'
+APPROVE_PORT6='56666 56667 30080'
 
 # 钉钉一键审批（留空则推送退回纯文本，无按钮）
 # QUICK_SECRET: 32 位 hex，watch 算签名与 CGI 验签必须一致

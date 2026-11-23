@@ -1,6 +1,6 @@
 # /etc/ip-approve — IP 审批防火墙体系
 
-对 4 个端口（APPROVE_PORT，见 approved.conf）做「先探测进 pending → 钉钉推送 → 手机一键批准/拒绝」的动态放行体系。
+对配置端口（APPROVE_PORT / APPROVE_PORT6，见 approved.conf，当前含 50000/56680/30080 与 56666/56667/30080）做「先探测进 pending → 钉钉推送 → 手机一键批准/拒绝」的动态放行体系。
 
 ## 前置条件
 
