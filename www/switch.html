@@ -40,10 +40,10 @@
       由 luci-base 授权（注意：本机所有 acl.d 都没有授权 uci.commit，
       提交必须走 uci.apply）；firewall 配置的读写由 luci-app-firewall 授权；
       luci.getProcessList 由 luci-app-ddns/upnp 等授权。
-      服务动作统一走 rc.init（luci.setInitAction 会与 passwall 的 lua
-      helper 死锁，已弃用）。
-    - passwall 的动作入口是自建 /etc/init.d/pswctl（见下方说明，
-      随 /etc/sysupgrade.conf 保留），没这个文件则 passwall 开关不可用。
+      服务启停走本控制器 service action（见下方说明），firewall reload
+      仍走 rc.init。luci.setInitAction 会与 passwall 的 lua helper 死锁，弃用。
+    - passwall 启停不再依赖自建脚本：控制器在 uhttpd 进程（umask 0022）里
+      直接执行 /etc/init.d/passwall，避开 rpcd 的 umask 0077 与死锁。
     - luci.getInitList 无任何组授权，本页不使用；服务信息全部来自 rc.list。
     - 运行状态卡片：system.info/board、network.interface dump、
       luci.getMountPoints（磁盘）、luci.getRealtimeStats（WAN 速率差分）、
@@ -54,11 +54,11 @@
 
   各开关的实现（等价于 LuCI 里对应的开关按钮）：
     passwall 启动/停止  -> uci.set global.enabled(1/0) -> uci.apply，
-                           再经 rc.init 调 /etc/init.d/pswctl（自建包装脚本）
-                           发 start|restart|stop。pswctl 先清洗 rpcd 派发环境
-                           （关继承 fd + umask 022）再执行 passwall 的
-                           restart/stop，避免 rpcd umask 0077 与 lua helper
-                           调 ubus 死锁造成的假启动；passwall 原 init 不改。
+                           再经控制器 service action 在 uhttpd 进程里执行
+                           /etc/init.d/passwall 的 start|restart|stop（执行前
+                           关继承 fd + umask 022，start 时进程在跑就 restart）。
+                           不经 rpcd，避开其 umask 0077 与 lua helper 调 ubus
+                           死锁造成的假启动；passwall 原 init 不改。
                            与 LuCI passwall 页主开关同步；开机自启位不动，
                            但 enabled=0 时重启路由器不会自动拉起代理。
     端口转发 启用/禁用  -> uci.set -> uci.apply -> rc.init reload firewall，
@@ -388,15 +388,17 @@ async function ubus(obj, mtd, params, soft) {
 }
 
 /*
- * 执行 init 脚本动作，只用 rpcd 内置 rc.init。
- * 实测：luci.setInitAction 会在 rpcd 事件循环里同步跑 init 脚本，期间 rpcd
- * 无法应答其他 ubus 请求，而 passwall 的 lua helper 自己要调 ubus → 死锁，
- * 配置生成中断（0 字节 json），xray 启动 EOF，假启动。rc.init 无此问题。
- * passwall 服务走自建包装 /etc/init.d/pswctl（内部清洗 rpcd 环境），
- * 其余目标（firewall reload）直接用原名。
+ * 服务启停走控制器的 service action（在 uhttpd 进程里执行，umask 0022，
+ * 不经过 rpcd → 无死锁、无权限坑），不再依赖自建 /etc/init.d/pswctl。
+ * 原因：luci.setInitAction 在 rpcd 事件循环里同步跑 init，passwall 的 lua
+ * helper 调 ubus 会死锁 → 配置生成 0 字节、xray EOF 假启动；rc.init 虽异步
+ * 但继承 rpcd umask 0077，生成文件 0600 低权限进程读不了。
+ * firewall reload 不涉及上述坑，仍走 rc.init。
  * action 只可能是 start / stop / restart / reload，绝无 enable / disable。
  */
-const SVC_INIT = 'pswctl';   /* passwall 服务的 init 目标（包装脚本） */
+async function serviceAction(act) {
+  await api('service', { act });
+}
 async function initAction(name, action) {
   const r = await ubus('rc', 'init', { name, action }, true);
   if (r && r.error) throw new Error(r.error);
@@ -417,8 +419,7 @@ async function procAlive(pattern) {
 async function waitPasswallQuiet(timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const busy = await procAlive('/etc/init.d/pswctl')          /* 包装脚本本体 */
-              || await procAlive('/etc/init.d/passwall')        /* exec 后的实体 */
+    const busy = await procAlive('/etc/init.d/passwall')        /* init 脚本本体 */
               || await procAlive('/usr/share/passwall/app.sh');
     if (!busy) return true;
     await new Promise(r => setTimeout(r, 500));
@@ -444,17 +445,17 @@ async function applyService(name, to) {
       values: { enabled: to ? '1' : '0' } }, true);
     await ubus('uci', 'apply', { rollback: false, timeout: 10 }, true);
     await new Promise(r => setTimeout(r, 600));
-    /* 走自建包装 pswctl（清洗 rpcd 环境），start 映射为 passwall restart */
-    await initAction(SVC_INIT, to ? 'start' : 'stop');
+    /* 走控制器 service（进程在跑时 start 自动映射为 restart） */
+    await serviceAction(to ? 'start' : 'stop');
     /* 等 stop/restart 的后台脚本收尾，避免新旧操作互相 kill 对方的 gen_config */
     await waitPasswallQuiet(20000);
     if (to && !(await procAlive('/tmp/etc/passwall/bin/'))) {
       /* 核心进程没起来（偶发 gen 被打断）：再补一次 restart */
-      await initAction(SVC_INIT, 'restart');
+      await serviceAction('restart');
       await waitPasswallQuiet(20000);
     }
   } else {
-    await initAction(SVC_INIT, to ? 'start' : 'stop');
+    await serviceAction(to ? 'start' : 'stop');
   }
 }
 

@@ -110,6 +110,33 @@ function action_state(body) {
 	});
 }
 
+/* 服务启停：不用 rpcd 的 rc.init / luci.setInitAction（umask 0077 + 同步
+   阻塞事件循环 → passwall 的 lua helper 调 ubus 死锁、配置生成假启动），
+   改在本控制器所在的 uhttpd CGI 进程（umask 0022）里用 system() 直接执行。
+   等价于原自建 /etc/init.d/pswctl 包装：关继承 fd + umask 022 + start 智能映射
+   （核心进程在跑就 restart，跳过空转 stop 省 ~2s），但不再需要那个脚本文件。
+   action 白名单 start/stop/restart，name 固定 passwall，杜绝命令注入。 */
+const SERVICE_INIT = '/etc/init.d/passwall';
+const SERVICE_PGREP = '/tmp/etc/passwall/bin/';
+function action_service(body) {
+	const action = '' + (param(body, 'act', '') ?? '');
+	if (action != 'start' && action != 'stop' && action != 'restart') {
+		json_err('bad service action');
+		return;
+	}
+	/* start：已在跑就 restart（等价 pswctl），否则 start */
+	let act = action;
+	if (action == 'start')
+		act = system('pgrep -f ' + SERVICE_PGREP + ' >/dev/null 2>&1')
+			? 'restart' : 'start';
+	/* 关 >2 的继承 fd、umask 022，再后台执行，避免阻塞本 CGI 请求 */
+	const cmd = 'for f in /proc/self/fd/*; do n=${f##*/}; '
+		+ '[ "$n" -gt 2 ] 2>/dev/null && eval "exec $n<&-" 2>/dev/null; done; '
+		+ 'umask 022; ' + SERVICE_INIT + ' ' + act + ' >/dev/null 2>&1 &';
+	system(cmd);
+	json_out({ ok: true, action: act });
+}
+
 /* 单条 ubus 调用代理：供开关操作时的 uci set/apply、rc.init、进程轮询使用 */
 function action_call(body) {
 	const o = '' + (param(body, 'o', '') ?? '');
@@ -135,6 +162,7 @@ return {
 		const action = '' + (param(body, 'action', 'state') ?? '');
 		if (action == 'state') action_state(body);
 		else if (action == 'call') action_call(body);
+		else if (action == 'service') action_service(body);
 		else json_err('bad action');
 	}
 };
