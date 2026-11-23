@@ -14,6 +14,10 @@
 #      端口应只给单一目标服务使用（如 fnOS Web 5666/5667）
 # 规则结构（每组 4 条）：deny(set)→drop / allow(set)→accept / pending(set)→reject /
 #   probe-log(无集合,兜底)→log+reject ← watch 靠 probe-log 日志发现新探测源
+# 其他:
+#   - nft 日志前缀 = fw4 取自规则名（如 ip4-probe-log: ），approved-ip-watch.sh 用泛匹配
+#     *pending-reject* / *probe-log* 兜住所有前缀，规则改名无需同步 watch
+#   - 末尾 uci commit 并重启防火墙使全部变更生效；ip_pending 为运行时集合，重启后清空
 CONF=/etc/ip-approve/approved.conf
 
 # 解析变量值：去引号/分号，逗号转空格；未配置返回空
