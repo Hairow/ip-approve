@@ -62,6 +62,10 @@ cn 白名单相关文件在 /etc/cn-ipset/，与本目录无关。
 - 按钮链接域名取自 QUICK_URL；清空 QUICK_URL 或 QUICK_SECRET 自动退回纯文本推送
 - 已处理 IP 再点旧按钮会显示「已于本次推送之前已被批准/拒绝」
 
+## fnOS 转发审批组（IPv6）
+
+sync-approve-firewall.sh 会维护一组 forward 规则（随 APPROVE_PORT6 启停）：非 cn 来源经 IPv6 访问 fnOS Web（5666/5667）时由 fnos-probe-log6 记录探测源进 pending，推送钉钉审批；批准后经 ip_allow6 放行。cn 白名单规则 Allow-fnos-Web6 已移除（所有来源统一走审批）。
+
 ## 改端口
 
 编辑 approved.conf 的 APPROVE_PORT（IPv4 端口，空格分隔）和 APPROVE_PORT6（IPv6 端口，空格分隔），然后运行 /etc/ip-approve/sync-approve-firewall.sh（v4/v6 分别同步 + 重建缺失的 ipset/规则 + 重启防火墙）。
