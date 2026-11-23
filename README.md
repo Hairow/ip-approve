@@ -26,7 +26,7 @@
 | pending.list | 待审批 IP 队列（IP + 时间） |
 | ip-allow.list / ip-allow6.list | 批准名单（写入 nft ip_allow / ip_allow6） |
 | ip-deny.list / ip-deny6.list | 拒绝名单（写入 nft ip_deny / ip_deny6） |
-| ip-approve | 审批执行核心（路由器上位于 /www/cgi-bin/ip-approve）：flock 原子更新 pending/allow/deny 底账与 nft 集合，面板/钉钉/CLI 三入口共用 |
+| cgi-bin/ip-approve | 审批执行核心（路由器上位于 /www/cgi-bin/ip-approve）：flock 原子更新 pending/allow/deny 底账与 nft 集合，面板/钉钉/CLI 三入口共用 |
 | approved-ip-watch.sh | 监听服务本体：解析探测日志 → nft pending 集合 + pending.list → 推钉钉 |
 | sync-approve-firewall.sh | 同步/重建防火墙：各组端口同步 + 缺失 ipset/规则自动重建（改端口变量后运行） |
 | quick/cgi-bin/ip-approve-quick | 钉钉按钮的免登录签名 CGI（HMAC + 30 分钟时效 + pending 校验） |
