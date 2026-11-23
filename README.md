@@ -64,7 +64,9 @@ cn 白名单相关文件在 /etc/cn-ipset/，与本目录无关。
 
 ## 改端口
 
-编辑 approved.conf 的 APPROVE_PORT（空格分隔），然后运行 /etc/ip-approve/sync-approve-firewall.sh（同步端口 + 重建缺失的 ipset/规则 + 重启防火墙）。
+编辑 approved.conf 的 APPROVE_PORT（IPv4 端口，空格分隔）和 APPROVE_PORT6（IPv6 端口，空格分隔），然后运行 /etc/ip-approve/sync-approve-firewall.sh（v4/v6 分别同步 + 重建缺失的 ipset/规则 + 重启防火墙）。
+
+端口变量**留空 = 该协议族不创建审批规则**（已存在的会被脚本移除），流量直接落到 wan 兜底拒绝，即该协议族不走审批；恢复配置后再次运行脚本即自动重建。
 
 ## 升级保留
 
