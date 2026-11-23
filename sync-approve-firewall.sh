@@ -144,7 +144,7 @@ sync_rules forward "$FWD_P4" "$FWD_P6"
 
 uci commit firewall
 [ -n "$created" ] && echo "变更:$created"
-echo "input   v4: ${IN_P4:-<未配置，停用>}  |  input   v6: ${IN_P6:-<未配置，停用>}"
-echo "forward v4: ${FWD_P4:-<未配置，停用>}  |  forward v6: ${FWD_P6:-<未配置，停用>}"
+echo "input   v4: ${IN_P4:-未配置，停用}  |  input   v6: ${IN_P6:-未配置，停用}"
+echo "forward v4: ${FWD_P4:-未配置，停用}  |  forward v6: ${FWD_P6:-未配置，停用}"
 /etc/init.d/firewall restart >/dev/null 2>&1
 echo 'OK'
