@@ -1,0 +1,1498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>开关面板</title>
+<!--
+  iStoreOS 开关面板 · 独立部署版
+  ============================================================
+  面板项（只有这一项，别的不显示）：
+    1. passwall            init 服务：启动 / 停止
+
+  部署（在能 SSH 到路由器的机器上执行）：
+    scp switch.html iStoreOS:/www/switch.html
+  访问：
+    已登录 LuCI 的浏览器直接打开 -> 自动复用 LuCI 会话，无需再输密码
+      （LuCI 会话 cookie 为 HttpOnly，JS 读不到；改为请求 /cgi-bin/luci/
+        从页面 HTML 的 sessionid 字段提取，浏览器自动携带 cookie）
+    LuCI 未登录时打开 -> 显示登录框，输入 root 密码（与 LuCI 相同凭据）
+    面板不提供「退出」按钮：本页不调用 session.logout，
+    以免把正在使用的 LuCI 会话一起登出；会话失效时自动回到登录框。
+
+  升级保住文件（不做这一步，保留配置的常规升级后文件会丢）：
+    ssh iStoreOS 'echo /www/switch.html >> /etc/sysupgrade.conf'
+    ssh iStoreOS 'sysupgrade -l | grep switch'
+  只写单个文件，不要写 /www/ 整个目录。-n / 恢复出厂一律清空，另存本地副本。
+
+  原理：
+    uhttpd 内置 /ubus 前缀，页面与 LuCI 同源，JSON-RPC 直调 rpcd，
+    凭据复用 root 密码 session.login。无服务端、无跨域。
+
+  实机情况（2026-11-13 在 iStoreOS 24.10.8 上核实）：
+    - /etc/config/rpcd 的 root login 节 read='*' write='*'，
+      即 root 会话获得 /usr/share/rpcd/acl.d/ 全部组的权限。
+    - rc.list / rc.init 由 luci-mod-system 授权；uci get/set/apply
+      由 luci-base 授权（注意：本机所有 acl.d 都没有授权 uci.commit，
+      提交必须走 uci.apply）；firewall 配置的读写由 luci-app-firewall 授权；
+      luci.getProcessList 由 luci-app-ddns/upnp 等授权。
+      服务动作统一走 rc.init（luci.setInitAction 会与 passwall 的 lua
+      helper 死锁，已弃用）。
+    - passwall 的动作入口是自建 /etc/init.d/pswctl（见下方说明，
+      随 /etc/sysupgrade.conf 保留），没这个文件则 passwall 开关不可用。
+    - luci.getInitList 无任何组授权，本页不使用；服务信息全部来自 rc.list。
+    - 运行状态卡片：system.info/board、network.interface dump、
+      luci.getMountPoints（磁盘）、luci.getRealtimeStats（WAN 速率差分）、
+      luci-rpc.getDHCPLeases（在线设备按 MAC 去重）均在授权内。
+    - passwall 的 init 脚本非 USE_PROCD，rc.list 不返回 running，
+      运行态用 luci.getProcessList 按 /tmp/etc/passwall/bin/ 路径
+      匹配核心进程实时判断；查询失败才降级推定（徽章标「·推定」）。
+
+  各开关的实现（等价于 LuCI 里对应的开关按钮）：
+    passwall 启动/停止  -> uci.set global.enabled(1/0) -> uci.apply，
+                           再经 rc.init 调 /etc/init.d/pswctl（自建包装脚本）
+                           发 start|restart|stop。pswctl 先清洗 rpcd 派发环境
+                           （关继承 fd + umask 022）再执行 passwall 的
+                           restart/stop，避免 rpcd umask 0077 与 lua helper
+                           调 ubus 死锁造成的假启动；passwall 原 init 不改。
+                           与 LuCI passwall 页主开关同步；开机自启位不动，
+                           但 enabled=0 时重启路由器不会自动拉起代理。
+    端口转发 启用/禁用  -> uci.set -> uci.apply -> rc.init reload firewall，
+                           等价于 LuCI 防火墙页勾选/取消「启用」并保存应用。
+                           规则按 name 匹配 redirect 节，无对应规则显示「未找到」。
+
+  部署前核对：
+    ssh iStoreOS 'ls /etc/init.d/ | grep passwall'
+    LuCI「系统-启动项」能开关服务、「网络-防火墙-端口转发」能改规则，
+    则本页所用接口均可用。
+
+  安全：
+    本文件不鉴权，只暴露到内网或 VPN；别把 root 登录口裸奔公网。
+    token 存 sessionStorage，不随请求自动携带，天然不引入 CSRF 面。
+-->
+<style>
+  :root{--bg:#0f1420;--panel:#171e2e;--line:#2a3550;--text:#e8edf7;--muted:#8a97b0;
+    --blue:#4f8cff;--green:#2ecc71;--red:#ff5c5c;--amber:#e0a63a;--radius:14px}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;background:var(--bg);
+    color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+  .wrap{width:100%;margin:0 auto}
+  /* 大屏上限：面板/加载态最宽 1600（1080p 下仍是 80%，只有超宽屏才收），登录框固定窄栏 */
+  #panel,#loading{max-width:1600px}
+  #login{display:none;max-width:440px;background:var(--panel);border:1px solid var(--line);
+    border-radius:var(--radius);padding:34px}
+  #login h1{font-size:21px;margin-bottom:6px}
+  #login p{font-size:15px;color:var(--muted);margin-bottom:22px}
+  /* 唯一的加载态：#loading，检测登录与获取状态共用同一个元素、同一套 CSS，
+     只替换里面的文字。无边框、无背景，内容在 --boot-h 高度内垂直居中，
+     与主面板等高，切换时不会跳 */
+  #loading{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+    min-height:var(--boot-h,60vh);padding:0 26px;color:var(--muted);font-size:15px;line-height:1.5}
+  #loading .ring{width:24px;height:24px;border-radius:50%;flex:none;
+    border:2px solid rgba(79,140,255,.25);border-top-color:var(--blue);animation:spin .8s linear infinite}
+  input{width:100%;background:#1d2639;border:1px solid var(--line);color:var(--text);
+    border-radius:10px;padding:13px 15px;font-size:17px;outline:none;margin-bottom:14px}
+  input:focus{border-color:var(--blue)}
+  button{width:100%;border:none;border-radius:10px;padding:13px;font-size:17px;cursor:pointer;
+    background:var(--blue);color:#fff;margin-top:4px}
+  button:disabled{opacity:.6}
+  #panel{display:none;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:26px}
+  /* 登录框 <-> 主面板 之间才有过渡；加载态不参与过渡，只显示图标+文字 */
+  #login,#panel{transition:opacity .26s ease,transform .26s ease}
+  /* 面板首次显示时内容浮入；面板在加载期间是 display:none，不占位也不用藏子元素 */
+  #panel .head,#panel #sysinfo,#panel #list{animation:viewIn .3s ease both}
+  @keyframes viewIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+  .head h1{font-size:19px}
+  .head small{color:var(--muted);font-size:14px;font-weight:400}
+  .sysinfo,#list{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
+  .sysinfo{margin-bottom:16px}
+  #list{margin-top:16px}
+  @media (min-width:601px){          /* 桌面：内容占视口 80%，两侧留白 */
+    .wrap{width:80%}
+  }
+  @media (min-width:601px) and (max-width:1366px){   /* 中屏 2 列 */
+    .sysinfo,#list{grid-template-columns:repeat(2,minmax(0,1fr))}
+  }
+  @media (min-width:1367px) and (max-width:1920px){  /* 1367~1080p 3 列 */
+    .sysinfo,#list{grid-template-columns:repeat(3,minmax(0,1fr))}
+  }
+  @media (min-width:1921px){          /* 大于 1080p 4 列 */
+    .sysinfo,#list{grid-template-columns:repeat(4,minmax(0,1fr))}
+  }  .sysinfo .cell,#list .cell{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);
+    border-radius:10px;padding:12px 14px}
+  .sysinfo .k{font-size:13px;color:var(--muted)}
+  .sysinfo .v{font-size:16px;margin-top:5px;font-variant-numeric:tabular-nums;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sysinfo .v small{font-size:13px;color:var(--muted);font-weight:400}
+  .sysinfo .v.warn{color:var(--amber)}
+  .sysinfo .cell .k,.sysinfo .cell .v{min-width:0}
+  .item{display:flex;flex-direction:column;gap:7px}
+  .item .top{display:flex;justify-content:space-between;align-items:center;gap:10px;min-width:0}
+  .item b{font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item .d{font-size:14px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item .badge{margin-top:auto;align-self:flex-start;font-size:13px;padding:3px 10px}
+  .badge{font-size:14px;padding:4px 12px;border-radius:12px;background:rgba(46,204,113,.15);
+    color:var(--green);white-space:nowrap}
+  .badge.off{background:rgba(255,92,92,.15);color:var(--red)}
+  .badge.warn{background:rgba(224,166,58,.15);color:var(--amber)}
+  .badge.guess{background:transparent;border:1px dashed var(--line);color:var(--muted)}
+  .sw{position:relative;width:54px;height:30px;background:#1d2639;border:1px solid var(--line);
+    border-radius:20px;cursor:pointer;transition:.2s;flex-shrink:0}
+  .sw::after{content:"";position:absolute;left:3px;top:3px;width:22px;height:22px;border-radius:50%;
+    background:var(--muted);transition:.2s}
+  .sw.on{background:rgba(46,204,113,.25);border-color:var(--green)}
+  .sw.on::after{left:27px;background:var(--green)}
+  .sw.busy{opacity:.85;pointer-events:none}
+  .sw.busy::after{                      /* 处理中：圆点变旋转环 */
+    left:50%;top:50%;width:16px;height:16px;margin:-8px 0 0 -8px;background:transparent;
+    border:2px solid var(--line);border-top-color:var(--blue);animation:spin .7s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .badge.loading{background:rgba(79,140,255,.15);color:var(--blue)}
+  .sw:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+  .err{color:var(--red);font-size:14px;margin-top:12px;display:none;line-height:1.5}
+  /* 页脚用等宽数字，时间 14:06:36 与秒数 30→9 变化时字宽不变，整行不抖 */
+  .foot{font-size:13px;color:var(--muted);text-align:right;margin-top:16px;
+    font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+  /* 倒计时文案宽度固定（按最长的「30 秒后刷新」定），内部右对齐：
+     秒数位数变化、切到「正在刷新…」「刷新已暂停」时，整行右边界与左侧文字都不动 */
+  #nextIn{display:inline-block;min-width:6.2em;text-align:right}
+  #toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(10px);opacity:0;
+    background:#1d2639;border:1px solid var(--line);padding:12px 22px;border-radius:12px;font-size:15px;
+    transition:.25s;pointer-events:none;max-width:90vw}
+  #toast.show{opacity:1;transform:none}
+  /* ============ 设备明细弹层 ============ */
+  .cell.clickable{cursor:pointer;transition:border-color .2s;position:relative;padding-right:44px}
+  .cell.clickable:hover{border-color:rgba(79,140,255,.45)}
+  /* 卡片右侧的「查看明细」圆形箭头 */
+  .more{position:absolute;right:12px;top:50%;width:24px;height:24px;margin-top:-12px;
+    display:flex;align-items:center;justify-content:center;border-radius:50%;
+    background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);
+    color:var(--muted);transition:background .2s,border-color .2s,color .2s,transform .2s}
+  .more svg{width:12px;height:12px;display:block}
+  .cell.clickable:hover .more{background:rgba(79,140,255,.16);border-color:rgba(79,140,255,.5);
+    color:var(--blue);transform:translateX(2px)}
+  .cell.clickable:active .more{transform:translateX(2px) scale(.94)}
+  #devModal{position:fixed;inset:0;background:rgba(8,12,20,.72);display:none;
+    align-items:center;justify-content:center;padding:20px;z-index:50}
+  #devModal.show{display:flex}
+  .modal-box{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    width:min(620px,96vw);max-height:82vh;display:flex;flex-direction:column}
+  .modal-head{display:flex;align-items:center;gap:10px;padding:16px 18px;
+    border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .modal-head b{font-size:17px}
+  .modal-head .cnt{color:var(--muted);font-size:13px}
+  .modal-head button{margin-left:auto;width:auto;padding:6px 14px;font-size:14px;
+    background:none;border:1px solid var(--line);color:var(--muted);border-radius:9px;margin-top:0}
+  .devlist{overflow:auto;padding:4px 18px 16px;-webkit-overflow-scrolling:touch}
+  .devrow{padding:11px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+  .devrow:last-child{border-bottom:none}
+  .devrow .n{display:flex;align-items:baseline;gap:8px;min-width:0}
+  .devrow .n b{font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .devrow .n .mac{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;
+    flex-shrink:0;margin-left:auto}
+  .devrow .a{font-size:13px;color:var(--muted);margin-top:5px;
+    font-variant-numeric:tabular-nums;display:flex;flex-direction:column;gap:3px}
+  .devrow .a span{overflow-wrap:anywhere}
+  .tag{font-size:11px;padding:1px 6px;border-radius:6px;margin-right:6px;display:inline-block}
+  .tag.v4{background:rgba(79,140,255,.16);color:var(--blue)}
+  .tag.v6{background:rgba(46,204,113,.16);color:var(--green)}
+  /* ============ 响应式 ============ */
+  @media (max-width:600px){
+    .wrap{width:100%}
+    .sysinfo{grid-template-columns:1fr}
+  }
+  @media (max-width:480px){
+    body{padding:14px;align-items:flex-start}
+    .sysinfo{grid-template-columns:1fr}
+    #panel{padding:20px}
+    #login{padding:24px}
+    .head h1{font-size:17px}
+    .head small{font-size:13px}
+    .sysinfo{gap:8px;margin-bottom:14px}
+    .sysinfo .cell{padding:10px 12px}
+    .sysinfo .k{font-size:12px}
+    .sysinfo .v{font-size:15px;margin-top:4px}
+    .sysinfo .v small{font-size:12px}
+    .item .top{gap:8px}
+    .item b{font-size:15px}
+    .item .d{font-size:13px}
+    .badge{font-size:13px;padding:3px 10px}
+    .sw{width:48px;height:27px}
+    .sw::after{width:20px;height:20px}
+    .sw.on::after{left:24px}
+    #toast{font-size:14px}
+  }
+</style>
+</head>
+<!-- data-cores：CPU 核数，部署时按目标机器改写（rpcd 不暴露核数，静态内联省一次请求） -->
+<body data-cores="4">
+
+<div class="wrap" id="loading">
+  <span class="ring"></span>
+  <span id="loadingMsg">正在检测登录状态…</span>
+</div>
+
+<div class="wrap" id="login">
+  <h1>&#128268; 远程开关面板</h1>
+  <p>使用 iStoreOS root 密码登录（与 LuCI 相同凭据）</p>
+  <input id="user" placeholder="用户名" value="root" autocomplete="username">
+  <input id="pass" placeholder="root 密码" type="password" autocomplete="current-password">
+  <button id="btnLogin" type="button">登 录</button>
+  <div class="err" id="loginErr"></div>
+</div>
+
+<div class="wrap" id="panel">
+  <div class="head">
+    <h1>&#128268; 开关面板 <small>本机 · 同源</small></h1>
+  </div>
+  <div id="sysinfo" class="sysinfo"></div>
+  <div id="list"></div>
+  <p class="foot" id="lastUpdate"></p>
+</div>
+
+<div id="toast"></div>
+
+<div id="devModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <b>在线设备</b><span class="cnt" id="devCnt"></span>
+      <button type="button" id="devClose">关闭</button>
+    </div>
+    <div class="devlist" id="devList"></div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+ * 面板项：只有这一项
+ *   type:'service'  -> /etc/init.d/ 下的服务，start/stop
+ *   type:'redirect' -> /etc/config/firewall 里的端口转发规则，
+ *                      name 必须与 LuCI 里的规则名完全一致
+ * ============================================================ */
+const ITEMS = [
+  /* pgrep：非 procd 服务（如 passwall）rc.list 查不到运行态，
+     用 luci.getProcessList 按 pgrep 字段（进程命令行前缀）匹配真实进程 */
+  { name: 'passwall',     desc: 'PassWall 分流',       type: 'service', pgrep: '/tmp/etc/passwall/bin/' },
+];
+
+const REFRESH_MS = 30000;
+const ZERO_SID = '00000000000000000000000000000000';
+const TOKEN_KEY = 'sw_tok';
+const GUESS_KEY = 'sw_guess';
+
+/* ==================== 状态 ==================== */
+const S = {
+  token: null,
+  sessionLost: false,  /* 会话已失效标记：置位后 ubus 拒绝一切请求，避免过期后继续轮询接口 */
+  tokenFrom: null,     /* 'luci' = 复用 LuCI 会话；'self' = 本页自己登录 */
+  status: {},          /* name -> { on, source, enabled, known, section } */
+  busy: false,
+  rcAvailable: true,
+  sysinfo: null,       /* system.info：运行时间/负载/内存 */
+  board: null,         /* system.board：型号，基本不变，取一次缓存 */
+  net: null,           /* network.interface dump 解析出的 WAN v4/v6 地址 */
+  disk: null,          /* 挂载点列表（系统盘 + 外接盘） [{ mount, label, used, total }] */
+  rate: null,          /* getRealtimeStats 差分出的 WAN 速率 { rx, tx }（B/s） */
+  devices: null,       /* 设备明细 [{ key, name, mac, v4[], v6[] }] */
+  localAddrs: null,    /* 路由器本机各接口地址，用于把「自己」从设备列表里剔除 */
+  cores: 0,            /* CPU 核数：rpcd 没有取核数的接口，内联在 <body data-cores="N"> 里（部署时按目标机器写入） */
+};
+const $ = id => document.getElementById(id);
+const REDUCE_MOTION = !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+/* 首屏「检测登录状态」/ 面板加载占位 与主面板同高：
+   按网格列数分档缓存上次实测的 #panel 高度，首次访问用视口 60% 估算，
+   这样从检测态切到面板时框体尺寸不变，不会跳一下 */
+const PANEL_H_KEY = 'switch.panelH';
+function panelCols() {
+  const w = window.innerWidth;
+  return w <= 600 ? 1 : w <= 1366 ? 2 : w <= 1920 ? 3 : 4;
+}
+function bootHeight() {
+  let m = {};
+  try { m = JSON.parse(localStorage.getItem(PANEL_H_KEY)) || {}; } catch (_) { /* 忽略 */ }
+  return m[panelCols()] || Math.round(window.innerHeight * 0.6);
+}
+function applyBootHeight() {
+  document.documentElement.style.setProperty('--boot-h', bootHeight() + 'px');
+}
+function savePanelHeight() {
+  const p = $('panel');
+  if (!p || getComputedStyle(p).display === 'none') return;
+  const h = Math.round(p.offsetHeight);
+  if (h < 200) return;                      /* 空壳或未渲染，不记录 */
+  let m = {};
+  try { m = JSON.parse(localStorage.getItem(PANEL_H_KEY)) || {}; } catch (_) { /* 忽略 */ }
+  if (m[panelCols()] === h) return;
+  m[panelCols()] = h;
+  try { localStorage.setItem(PANEL_H_KEY, JSON.stringify(m)); } catch (_) { /* 忽略 */ }
+}
+const hasOwn = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const esc = s => String(s).replace(/[&<>"']/g, c => ESC_MAP[c]);
+
+class SessionError extends Error {}
+
+function loadGuess() {
+  try { return JSON.parse(localStorage.getItem(GUESS_KEY)) || {}; } catch (_) { return {}; }
+}
+function saveGuess(name, running) {
+  const g = loadGuess();
+  g[name] = running;
+  try { localStorage.setItem(GUESS_KEY, JSON.stringify(g)); } catch (_) {}
+}
+
+/* ==================== ubus 调用 ==================== */
+/* soft=true：权限/对象不可用不当作会话失效，只抛普通错误 */
+async function ubus(obj, mtd, params, soft) {
+  /* 会话已失效：不再发任何接口请求，直接中止 */
+  if (S.sessionLost) throw new SessionError('会话已失效');
+  let data = null;
+  try {
+    const res = await fetch('/ubus', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', method: 'call', id: 1,
+        params: [S.token, obj, mtd, params || {}],
+      }),
+    });
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (ct.indexOf('json') !== -1) data = await res.json();
+  } catch (_) { data = null; }
+  if (!data) {
+    /* 非 JSON 响应（会话过期被网关拦截等）：一律按会话失效处理，不展示原始报文 */
+    if (!soft) forceLogout('会话已过期，请重新登录');
+    throw new SessionError('会话已失效');
+  }
+  if (data.error) {
+    /* -32002 Access denied：JSON-RPC 层拒绝 = sid 无效/过期（rpcd 会话超时）。
+       直接回登录页并抛 SessionError，让调用链立即中止，不再请求后续接口 */
+    if (data.error.code === -32002) {
+      forceLogout('会话已过期，请重新登录');
+      throw new SessionError('会话已失效');
+    }
+    throw new Error(data.error.message || 'ubus 调用失败');
+  }
+  const r = data.result || [];
+  if (r[0] === 6) {
+    /* UBUS_STATUS_PERMISSION_DENIED：token 失效或该对象未授权 */
+    if (soft) throw new Error('权限不足或对象不可用');
+    forceLogout('会话已失效或权限不足，请重新登录');
+    throw new SessionError('会话已失效');
+  }
+  if (r[0] !== 0) throw new Error('ubus 错误码 ' + r[0]);
+  return r[1];
+}
+
+/*
+ * 执行 init 脚本动作，只用 rpcd 内置 rc.init。
+ * 实测：luci.setInitAction 会在 rpcd 事件循环里同步跑 init 脚本，期间 rpcd
+ * 无法应答其他 ubus 请求，而 passwall 的 lua helper 自己要调 ubus → 死锁，
+ * 配置生成中断（0 字节 json），xray 启动 EOF，假启动。rc.init 无此问题。
+ * passwall 服务走自建包装 /etc/init.d/pswctl（内部清洗 rpcd 环境），
+ * 其余目标（firewall reload）直接用原名。
+ * action 只可能是 start / stop / restart / reload，绝无 enable / disable。
+ */
+const SVC_INIT = 'pswctl';   /* passwall 服务的 init 目标（包装脚本） */
+async function initAction(name, action) {
+  const r = await ubus('rc', 'init', { name, action }, true);
+  if (r && r.error) throw new Error(r.error);
+}
+
+/* rpcd 的 setInitAction / rc.init 是异步派发：调用返回时 init 脚本可能还在后台跑。
+   passwall 的 app.sh stop 会把命令行含 "passwall/" 的进程 kill -9（lua gen_config
+   不在其排除名单），若上一次 stop 未收尾又开始 restart，配置生成会被打断，
+   产出 0 字节 json → xray 启动 EOF（假启动）。
+   所以操作后轮询等 passwall 脚本进程收敛，开启时再确认核心进程已拉起。 */
+async function procAlive(pattern) {
+  try {
+    const r = await ubus('luci', 'getProcessList', {}, true);
+    return ((r && r.result) || []).some(
+      p => String(p.COMMAND || '').indexOf(pattern) !== -1);
+  } catch (_) { return false; }
+}
+async function waitPasswallQuiet(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const busy = await procAlive('/etc/init.d/pswctl')          /* 包装脚本本体 */
+              || await procAlive('/etc/init.d/passwall')        /* exec 后的实体 */
+              || await procAlive('/usr/share/passwall/app.sh');
+    if (!busy) return true;
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return false;
+}
+
+/* 服务开关：同步 uci global.enabled 主开关位（与 LuCI passwall 主开关一致），
+   再执行 start/stop。开机自启位（/etc/rc.d）不受影响。
+   注意 global.enabled 同时是 passwall 启动时的判断依据：
+   置 0 后重启路由器不会自动拉起代理，重新开启即恢复 */
+async function applyService(name, to) {
+  let section = null;
+  try {
+    const r = await ubus('uci', 'get', { config: name }, true);
+    const vals = (r && r.values) || {};
+    for (const k of Object.keys(vals)) {
+      if (vals[k] && vals[k]['.type'] === 'global') { section = vals[k]['.name']; break; }
+    }
+  } catch (_) { /* 读不到配置就退化为纯 start/stop */ }
+  if (section) {
+    await ubus('uci', 'set', { config: name, section,
+      values: { enabled: to ? '1' : '0' } }, true);
+    await ubus('uci', 'apply', { rollback: false, timeout: 10 }, true);
+    await new Promise(r => setTimeout(r, 600));
+    /* 走自建包装 pswctl（清洗 rpcd 环境），start 映射为 passwall restart */
+    await initAction(SVC_INIT, to ? 'start' : 'stop');
+    /* 等 stop/restart 的后台脚本收尾，避免新旧操作互相 kill 对方的 gen_config */
+    await waitPasswallQuiet(20000);
+    if (to && !(await procAlive('/tmp/etc/passwall/bin/'))) {
+      /* 核心进程没起来（偶发 gen 被打断）：再补一次 restart */
+      await initAction(SVC_INIT, 'restart');
+      await waitPasswallQuiet(20000);
+    }
+  } else {
+    await initAction(SVC_INIT, to ? 'start' : 'stop');
+  }
+}
+
+/* 端口转发：uci set -> apply -> reload 防火墙，等价 LuCI 保存并应用。
+   注意：本机 acl.d 没有任何组授权 uci.commit（LuCI 也是服务端绕开的），
+   必须用 uci.apply（授权内，等效 commit + 触发生效） */
+async function applyRedirect(name, to) {
+  const st = S.status[name];
+  if (!st || !st.section) throw new Error('找不到名为 ' + name + ' 的端口转发规则');
+  await ubus('uci', 'set', { config: 'firewall', section: st.section,
+    values: { enabled: to ? '1' : '0' } }, true);
+  await ubus('uci', 'apply', { config: 'firewall', rollback: false, timeout: 10 }, true);
+  await initAction('firewall', 'reload');
+}
+
+/* 探活：sid 有效且对 rc.list 有权限才采用（用于恢复本页自己的 ubus 会话） */
+async function probeToken(tok) {
+  const saved = S.token;
+  S.token = tok;
+  try {
+    await ubus('rc', 'list', { name: ITEMS[0].name }, true);
+    return true;
+  } catch (_) {
+    S.token = saved;
+    return false;
+  }
+}
+
+/* 查服务：rc.list 的 enabled（只读自启位）与 running（可能有） */
+async function queryService(name) {
+  try {
+    const r = await ubus('rc', 'list', { name }, true);
+    const e = r && r[name];
+    if (!e) return { ok: false, running: null, enabled: null };
+    const has = (typeof e.running === 'number' || typeof e.running === 'boolean');
+    return {
+      ok: true,
+      running: has ? !!e.running : null,
+      enabled: (typeof e.enabled === 'number' || typeof e.enabled === 'boolean')
+        ? !!e.enabled : null,
+    };
+  } catch (e) {
+    if (e instanceof SessionError) throw e;
+    return { ok: false, running: null, enabled: null };
+  }
+}
+
+/* 真实运行态：luci.getProcessList（明确在 ACL 授权里；file.exec 虽列在
+   授权数组却实际被拒）拉进程列表，按路径特征匹配核心进程。
+   passwall 的 xray/chinadns-ng 都在 /tmp/etc/passwall/bin/ 下，服务停了进程消失 */
+async function queryProc(pattern) {
+  try {
+    const r = await ubus('luci', 'getProcessList', {}, true);
+    const list = (r && r.result) || [];
+    /* 前缀匹配而非子串：核心进程的 COMMAND 都以该路径开头，
+       用 indexOf 会被 `ls /tmp/etc/passwall/bin`、`cat .../xray` 这类
+       命令行里带路径的临时 shell 误命中 */
+    return list.some(p => String(p.COMMAND || '').startsWith(pattern)) ? true
+         : list.length ? false   /* 列表拿到了但没有匹配进程 */
+         : null;                 /* 空列表视为异常，走降级 */
+  } catch (e) {
+    if (e instanceof SessionError) throw e;
+    return null;
+  }
+}
+
+/* 在 firewall 配置里按规则名找 redirect 节 */
+function findRedirect(fw, name) {
+  if (!fw) return null;
+  for (const key of Object.keys(fw)) {
+    const sec = fw[key];
+    if (sec && sec['.type'] === 'redirect' && sec.name === name) return sec;
+  }
+  return null;
+}
+
+/* 只查询单个条目的状态（开关操作完成后用，不整页 refresh）：
+   服务 = rc.list + 进程匹配；端口转发 = 按已知 section 精确 uci.get（首次未知时全量兜底） */
+async function queryItemStatus(it) {
+  const guess = loadGuess();
+  if (it.type === 'service') {
+    const p = S.rcAvailable ? await queryService(it.name)
+                            : { ok: false, running: null, enabled: null };
+    if (S.rcAvailable && !p.ok) S.rcAvailable = false;
+    const proc = it.pgrep ? await queryProc(it.pgrep) : null;
+    let on, source;
+    if (proc !== null && proc !== undefined) { on = proc; source = 'rpc'; }
+    else if (p.running !== null && p.running !== undefined) { on = p.running; source = 'rpc'; }
+    else if (hasOwn(guess, it.name)) { on = !!guess[it.name]; source = 'guess'; }
+    else { on = false; source = 'guess'; }
+    S.status[it.name] = {
+      on, source, enabled: p.enabled, known: p.ok || proc !== null, section: null,
+    };
+  } else {
+    const st0 = S.status[it.name];
+    let sec = null;
+    try {
+      if (st0 && st0.section) {                 /* 已知 section：单节查询 */
+        const r = await ubus('uci', 'get',
+          { config: 'firewall', section: st0.section }, true);
+        const v = r && r.values;
+        if (v && v['.type'] === 'redirect' && v.name === it.name) sec = v;
+      }
+      if (!sec) {                               /* 未知/校验不符：全量兜底 */
+        const r = await ubus('uci', 'get', { config: 'firewall' }, true);
+        sec = findRedirect((r && r.values) || r, it.name);
+      }
+    } catch (_) { /* 查询失败保持原状态 */ }
+    if (sec) {
+      const en = sec.enabled;
+      S.status[it.name] = {
+        on: (en === undefined || en === '' || en === '1' || en === 1 || en === true),
+        source: 'rpc', enabled: null, known: true, section: sec['.name'] || st0.section,
+      };
+    } else if (!st0 || !st0.known) {
+      S.status[it.name] = { on: false, source: 'none', enabled: null, known: false, section: null };
+    }
+  }
+  return S.status[it.name];
+}
+
+/* ==================== 登录 ==================== */
+async function login() {
+  const user = $('user').value.trim() || 'root';
+  const pass = $('pass').value;
+  showErr('');
+  if (!pass) return showErr('请输入密码');
+  const btn = $('btnLogin');
+  btn.disabled = true; btn.textContent = '登录中…';
+  try {
+    const res = await fetch('/ubus', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', method: 'call', id: 1,
+        params: [ZERO_SID, 'session', 'login', { username: user, password: pass }],
+      }),
+    });
+    const data = await res.json();
+    const r = data.result || [];
+    if (data.error || r[0] !== 0 || !r[1] || !r[1].ubus_rpc_session) {
+      throw new Error('登录失败，检查用户名密码');
+    }
+    S.token = r[1].ubus_rpc_session;
+    S.sessionLost = false;
+    $('pass').value = '';
+    S.tokenFrom = 'self';
+    sessionStorage.setItem(TOKEN_KEY, S.token);
+    /* 同步建立 LuCI 会话：审批卡片走 /cgi-bin/luci 需要 sysauth cookie，
+       用同样的凭据 POST LuCI 登录端点，由浏览器自动种 HttpOnly cookie。
+       失败不阻塞面板登录（卡片未登录时会自行隐藏）。 */
+    try{
+      await fetch('/cgi-bin/luci/', {
+        method: 'POST', credentials: 'same-origin',
+        body: new URLSearchParams({ luci_username: user, luci_password: pass })
+      });
+    }catch(e2){}
+    showPanel();
+    await refresh();
+    startPolling();
+  } catch (e) {
+    showErr(e instanceof TypeError ? '无法连接路由器 /ubus（确认是同源 HTTPS 访问）' : e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '登 录';
+  }
+}
+
+function forceLogout(msg) {
+  S.token = null;
+  S.sessionLost = true;
+  S.tokenFrom = null;
+  S.status = {};
+  sessionStorage.removeItem(TOKEN_KEY);
+  stopPolling();
+  panelReady = false;                /* 下次登录重新走加载占位 */
+  document.querySelectorAll('#ipapModal.show').forEach(m => m.classList.remove('show'));  /* 登出关闭审批弹层 */
+  showView('login');
+  showErr(msg);
+}
+
+const VIEWS = ['loading', 'login', 'panel'];
+const LOADING_ID = 'loading';
+
+/* 加载态只有一个元素（#loading），只换文字；它不参与淡入淡出，
+   过渡只发生在 登录框 <-> 主面板 之间 */
+const isLoadingView = el => !!el && el.id === LOADING_ID;
+
+/* 换加载文案：检测登录 -> 获取状态 只是同一元素换字，不会有任何位移/尺寸变化 */
+function setLoading(msg) { $('loadingMsg').textContent = msg; }
+
+/* 视图切换：旧视图淡出 + 上移，新视图淡入 + 下移复位。
+   fadeOut=false / 涉及加载态时直接换，不做淡出；
+   从加载态切到主面板也不淡入，改由面板内容自己的 viewIn 浮入 */
+function showView(toId, fadeOut) {
+  const b = $(toId);
+  if (!b) return;
+  const others = VIEWS.filter(v => v !== toId).map(v => $(v)).filter(Boolean);
+  const shown = others.filter(el => getComputedStyle(el).display !== 'none');
+  const toLoading = isLoadingView(b);                 /* 目标是加载态：直接出现，不淡入 */
+  const fromLoading = shown.some(isLoadingView);      /* 来源是加载态：直接消失，不淡出 */
+  const swap = () => {
+    others.forEach(el => {
+      el.style.display = 'none';
+      el.style.transition = ''; el.style.opacity = ''; el.style.transform = '';
+    });
+    b.style.display = '';                       /* 交回 CSS 默认（#loading 是 flex） */
+    /* #panel 默认 display:none，清空 inline 后计算值必为 none，这里补回 block。
+       别给面板写 inline flex：那行会一直留着，把面板变成横向 flex 容器，版式全乱 */
+    if (getComputedStyle(b).display === 'none') b.style.display = 'block';
+    if (REDUCE_MOTION || toLoading || (fromLoading && b.id === 'panel')) {
+      b.style.opacity = ''; b.style.transform = ''; return;
+    }
+    b.style.opacity = '0';
+    b.style.transform = 'translateY(8px)';
+    void b.offsetHeight;                /* 强制回流，否则下面的过渡不生效 */
+    b.style.transition = 'opacity .26s ease, transform .26s ease';
+    b.style.opacity = '1';
+    b.style.transform = 'none';
+    setTimeout(() => { b.style.transition = ''; b.style.opacity = ''; b.style.transform = ''; }, 300);
+  };
+  if (fadeOut === false || REDUCE_MOTION || !shown.length || toLoading || fromLoading) { swap(); return; }
+  shown.forEach(el => {
+    el.style.transition = 'opacity .18s ease, transform .18s ease';
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(-8px)';
+  });
+  setTimeout(swap, 180);
+}
+
+let panelReady = false;
+/* 面板还没数据时先停在同一个加载态，只把文案换成「正在获取状态」 */
+function showPanel() {
+  showErr('');
+  if (!panelReady) { setLoading('正在获取状态…'); showView(LOADING_ID); return; }
+  showView('panel');
+}
+
+function showErr(m) {
+  const e = $('loginErr');
+  if (!m) { e.textContent = ''; e.style.display = 'none'; return; }
+  e.textContent = m;
+  e.style.display = 'block';
+}
+
+/* 把租约与邻居表合并成设备明细：同一设备可能既有 DHCPv6 租约又有 SLAAC 地址，
+   按 MAC 归并（fnOS 这类租约无 MAC 的用 DUID 作身份）；路由器本机接口地址剔除。
+   注意 v6 只保留全局地址，fe80 链路本地与 fd ULA 不计。 */
+function isLocal(ip) { return S.localAddrs && S.localAddrs.has(ip); }
+
+/* DUID-LL 格式为 0003 + 0001 + 12 位 MAC，能反解出 MAC；
+   DUID-LLT（0001…）、DUID-UUID（0004…）无法反解，只能靠主机名归并 */
+function macFromDuid(duid) {
+  const m = String(duid || '').toLowerCase().match(/^00030001([0-9a-f]{12})$/);
+  if (!m) return null;
+  return (m[1].toUpperCase().match(/.{2}/g) || []).join(':');
+}
+
+function buildDevices(leases, hints) {
+  const map = new Map();
+  const get = key => {
+    if (!map.has(key)) map.set(key, { key, name: null, mac: null, v4: [], v6: [] });
+    return map.get(key);
+  };
+  const put = (arr, ip) => { if (ip && !isLocal(ip) && arr.indexOf(ip) < 0) arr.push(ip); };
+
+  ((leases && leases.dhcp_leases) || []).forEach(x => {
+    if (!(x.expires > 0) || !x.macaddr) return;
+    const d = get(x.macaddr.toUpperCase());
+    d.mac = d.mac || x.macaddr.toUpperCase();
+    if (x.hostname && !d.name) d.name = x.hostname;
+    put(d.v4, x.ipaddr);
+  });
+  ((leases && leases.dhcp6_leases) || []).forEach(x => {
+    if (!(x.expires > 0)) return;
+    /* DUID-LL（0003 0001 + MAC）能直接还原 MAC，避免同一设备被拆两条 */
+    const mac = x.macaddr ? x.macaddr.toUpperCase() : macFromDuid(x.duid);
+    const d = get(mac || 'duid:' + String(x.duid || ''));
+    if (mac && !d.mac) d.mac = mac;
+    if (x.hostname && !d.name) d.name = x.hostname;
+    (x.ip6addrs || (x.ip6addr ? [x.ip6addr] : [])).forEach(a => {
+      const ip = String(a).split('/')[0];
+      if (!/^fe80/i.test(ip) && !/^fd/i.test(ip)) put(d.v6, ip);
+    });
+  });
+  Object.keys(hints || {}).forEach(mac => {
+    const h = hints[mac] || {};
+    const v4s = (h.ipaddrs || []).filter(ip => !isLocal(ip));
+    const v6s = (h.ip6addrs || [])
+      .filter(a => !/^fe80/i.test(a) && !/^fd/i.test(a) && !isLocal(a));
+    if (!v4s.length && !v6s.length) return;    /* 只有本机地址或空记录：跳过 */
+    const d = get(mac.toUpperCase());
+    d.mac = d.mac || mac.toUpperCase();
+    if (h.name && !d.name) d.name = String(h.name).replace(/\.lan$/, '');
+    v4s.forEach(ip => put(d.v4, ip));
+    v6s.forEach(ip => put(d.v6, ip));
+  });
+
+  /* 收尾归并：DUID 反解不出 MAC 的 DHCPv6 租约（如 fnOS 的 DUID-UUID）会单独挂在
+     duid:xxx 键上，和同一台设备的 v4 租约分成两条。按主机名把这类条目并回有 MAC 的主条目。 */
+  const norm = s => String(s || '').trim().toLowerCase().replace(/\.lan$/, '');
+  const byName = new Map();
+  map.forEach(d => {
+    const n = norm(d.name);
+    if (n && d.mac && !byName.has(n)) byName.set(n, d);
+  });
+  map.forEach((d, k) => {
+    if (d.mac) return;                      /* 有 MAC 的条目本身就是主条目 */
+    const t = byName.get(norm(d.name));
+    if (!t || t === d) return;
+    d.v4.forEach(ip => put(t.v4, ip));
+    d.v6.forEach(ip => put(t.v6, ip));
+    if (!t.name && d.name) t.name = d.name;
+    map.delete(k);
+  });
+
+  return [...map.values()]
+    .filter(d => d.v4.length || d.v6.length)
+    .sort((a, b) => {
+      const an = String(a.name || a.mac || a.key).toLowerCase();
+      const bn = String(b.name || b.mac || b.key).toLowerCase();
+      return an < bn ? -1 : an > bn ? 1 : 0;
+    });
+}
+
+/* ==================== 状态刷新与渲染 ==================== */
+async function refresh() {
+  const guess = loadGuess();
+
+  /* 服务：rc.list（enabled 只读；running 仅有 procd 脚本才有），
+     配了 pgrep 的项另跑真实进程检测，结果优先 */
+  const svcItems = ITEMS.filter(i => i.type === 'service');
+  const probes = S.rcAvailable
+    ? await Promise.all(svcItems.map(i => queryService(i.name)))
+    : svcItems.map(() => ({ ok: false, running: null, enabled: null }));
+  if (S.rcAvailable && !probes.some(p => p.ok)) S.rcAvailable = false;
+  const procProbes = await Promise.all(
+    svcItems.map(i => i.pgrep ? queryProc(i.pgrep) : Promise.resolve(null)));
+  const probeByName = {};
+  const procByName = {};
+  svcItems.forEach((it, i) => {
+    probeByName[it.name] = probes[i];
+    procByName[it.name] = procProbes[i];
+  });
+
+  /* 端口转发：firewall 配置实时可读 */
+  let fw = null;
+  try {
+    const r = await ubus('uci', 'get', { config: 'firewall' }, true);
+    fw = (r && r.values) ? r.values : (r || {});
+  } catch (e) { if (e instanceof SessionError) throw e; }
+
+  /* 运行状态：system.info（授权内）+ system.board（取一次缓存） */
+  try {
+    const [info, board] = await Promise.all([
+      ubus('system', 'info', {}, true),
+      S.board ? Promise.resolve(S.board) : ubus('system', 'board', {}, true),
+    ]);
+    if (board) S.board = board;
+    S.sysinfo = info || null;
+  } catch (e) { if (e instanceof SessionError) throw e; S.sysinfo = null; }
+
+  /* WAN 地址：network.interface dump（授权内，LuCI 状态页同款）。
+     IPv4 取默认路由（0.0.0.0）所在接口；IPv6 取全局单播地址（2/3 开头，
+     排除 fe80 链路本地与 fd ULA），优先 wan_6 这类带默认 v6 路由的接口 */
+  try {
+    const r = await ubus('network.interface', 'dump', {}, true);
+    const ifs = (r && r.interface) || [];
+    const up = ifs.filter(i => i.up);
+    const v4if = up.find(i => (i.route || []).some(x => x.target === '0.0.0.0'))
+      || up.find(i => /^wan/.test(i.interface));
+    const v4 = v4if && v4if['ipv4-address'] && v4if['ipv4-address'][0];
+    let v6 = null;
+    for (const i of up.sort((a, b) =>
+        (b.route || []).some(x => x.target === '::') - (a.route || []).some(x => x.target === '::'))) {
+      const g = (i['ipv6-address'] || []).find(a => /^[23]/.test(a.address));
+      if (g) { v6 = g; break; }
+    }
+    S.net = {
+      v4: v4 ? v4.address : null,
+      v6: v6 ? v6.address : null,
+      dev: v4if ? v4if.device : null,
+    };
+    /* 收集本机所有接口地址（含 LAN），设备列表里要把路由器自己剔除 */
+    const local = new Set();
+    ifs.forEach(i => {
+      (i['ipv4-address'] || []).forEach(a => local.add(a.address));
+      (i['ipv6-address'] || []).forEach(a => local.add(String(a.address).split('/')[0]));
+    });
+    S.localAddrs = local;
+  } catch (e) { if (e instanceof SessionError) throw e; S.net = null; S.localAddrs = null; }
+
+  /* 磁盘：系统盘（/overlay，兜底 /）+ 实体块设备挂载（/data、外接 USB 盘等）。
+     跳过虚拟/只读/临时挂载（rom/boot/tmp/dev/mnt tmpfs）；used = size - free */
+  try {
+    const r = await ubus('luci', 'getMountPoints', {}, true);
+    const ms = (r && r.result) || [];
+    const skip = new Set(['/rom', '/boot', '/tmp', '/dev', '/mnt']);
+    const seen = new Set();
+    const disks = [];
+    const addDisk = (m, label) => {
+      if (seen.has(label)) return;
+      seen.add(label);
+      disks.push({ mount: m.mount, label, used: m.size - (m.free || 0), total: m.size });
+    };
+    for (const m of ms) {
+      if (!m.size || skip.has(m.mount) || m.device === 'overlayfs:/overlay') continue;
+      if (m.mount === '/overlay' || m.mount === '/') {
+        addDisk(m, '系统盘');
+      } else if (/^\/dev\/(sd|hd|mmcblk)/.test(m.device)) {
+        addDisk(m, m.mount.replace(/\/$/, '').split('/').pop() || m.mount);
+      }
+    }
+    S.disk = disks.length ? disks : null;
+  } catch (e) { if (e instanceof SessionError) throw e; S.disk = null; }
+
+  /* WAN 速率：计数器累积值取最后两个样本差分（dt 与采样间隔自适应，
+     字节计数溢出/回绕时放弃本次） */
+  try {
+    const dev = S.net && S.net.dev;
+    if (!dev) { S.rate = null; } else {
+      const r = await ubus('luci', 'getRealtimeStats', { mode: 'interface', device: dev }, true);
+      const s = (r && r.result) || [];
+      if (s.length >= 2) {
+        const a = s[s.length - 2], b = s[s.length - 1];
+        const dt = b[0] - a[0];
+        const rx = b[1] - a[1], tx = b[3] - a[3];
+        S.rate = (dt > 0 && rx >= 0 && tx >= 0) ? { rx: rx / dt, tx: tx / dt } : null;
+      } else { S.rate = null; }
+    }
+  } catch (e) { if (e instanceof SessionError) throw e; S.rate = null; }
+
+  /* 在线设备：租约（v4/v6）与邻居表合并去重成设备列表，卡片数字与明细同源。
+     v6 只保留全局地址（fe80/fd 不计），路由器本机地址剔除。 */
+  try {
+    const [leases, hints] = await Promise.all([
+      ubus('luci-rpc', 'getDHCPLeases', {}, true).catch(e => { if (e instanceof SessionError) throw e; return null; }),
+      ubus('luci-rpc', 'getHostHints', {}, true).catch(e => { if (e instanceof SessionError) throw e; return null; }),
+    ]);
+    S.devices = buildDevices(leases, hints);
+  } catch (e) { if (e instanceof SessionError) throw e; S.devices = null; }
+
+  ITEMS.forEach(it => {
+    if (it.type === 'service') {
+      const p = probeByName[it.name];
+      const proc = procByName[it.name];
+      let on, source;
+      if (proc !== null && proc !== undefined) {
+        on = proc; source = 'rpc';               /* pgrep 实测进程，最可信 */
+      } else if (p.running !== null && p.running !== undefined) {
+        on = p.running; source = 'rpc';
+      } else if (hasOwn(guess, it.name)) {
+        on = !!guess[it.name]; source = 'guess';
+      } else {
+        on = false; source = 'guess';   /* 无依据时保守视为已停止 */
+      }
+      S.status[it.name] = {
+        on, source, enabled: p.enabled, known: p.ok || proc !== null, section: null,
+      };
+    } else {
+      const sec = findRedirect(fw, it.name);
+      if (sec) {
+        const en = sec.enabled;
+        S.status[it.name] = {
+          on: (en === undefined || en === '' || en === '1' || en === 1 || en === true),
+          source: 'rpc', enabled: null, known: true, section: sec['.name'],
+        };
+      } else {
+        S.status[it.name] = { on: false, source: 'none', enabled: null, known: false, section: null };
+      }
+    }
+  });
+  if (window.ipapCountSync) { try { await window.ipapCountSync(); } catch (e){ if (e instanceof SessionError) throw e; } }   /* 审批数量随面板刷新同步 */
+  draw();
+  /* 首屏数据已就绪：从加载态切到主面板（内容自己 viewIn 浮入），再记录真实高度 */
+  if (!panelReady) {
+    panelReady = true;
+    showView('panel');
+  }
+  savePanelHeight();                        /* 记录真实高度，供下次加载态占位对齐 */
+  if (S.token) startPolling();              /* 刷新完就重置锚点：显示与实际触发同一个时间基准 */
+}
+
+function fmtUptime(sec) {
+  if (!sec || sec < 0) return '?';
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return d > 0 ? `${d} 天 ${h} 小时` : (h > 0 ? `${h} 小时 ${m} 分` : `${m} 分钟`);
+}
+
+function fmtRate(bps) {
+  if (bps === null || bps === undefined) return '?';
+  if (bps < 1024) return Math.round(bps) + ' B/s';
+  if (bps < 1048576) return (bps / 1024).toFixed(1) + ' KB/s';
+  return (bps / 1048576).toFixed(2) + ' MB/s';
+}
+
+function fmtSize(bytes) {
+  if (!bytes || bytes <= 0) return '?';
+  if (bytes < 1048576) return Math.round(bytes / 1024) + ' KB';
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(0) + ' MB';
+  return (bytes / 1073741824).toFixed(1) + ' GB';
+}
+
+function drawSysInfo() {
+  const si = $('sysinfo');
+  const info = S.sysinfo;
+  if (!info) { si.style.display = 'none'; si.innerHTML = ''; return; }
+  const m = info.memory || {};
+  const base = m.available !== undefined
+    ? m.total - m.available
+    : (m.total - m.free - m.buffered - m.cached);
+  const usedPct = m.total ? Math.round(base / m.total * 100) : null;
+  const load = Array.isArray(info.load) && info.load[0] !== undefined
+    ? (info.load[0] / 65536).toFixed(2) : '?';
+  /* 负载要和核数一起看才直观；核数读不到就只显示数字，不猜 */
+  const cores = S.cores || 0;
+  const loadWarn = cores ? load > cores : load > 4;
+  const model = S.board && S.board.model ? S.board.model : '?';
+  const memWarn = usedPct !== null && usedPct >= 85;
+  const disks = Array.isArray(S.disk) ? S.disk : null;
+  const diskCell = d => {
+    const pct = d.total ? Math.round(d.used / d.total * 100) : null;
+    const warn = pct !== null && pct >= 85;
+    return `<div class="cell"><div class="k" title="${esc(d.mount)}">${esc(d.label)}${pct !== null ? `（已用 ${pct}%）` : ''}</div>
+      <div class="v${warn ? ' warn' : ''}">${esc(fmtSize(d.used))}<small> / ${esc(fmtSize(d.total))}</small></div></div>`;
+  };
+  const rate = S.rate;
+  const rateTxt = rate
+    ? `${esc(fmtRate(rate.rx))}<small> ↓ / </small>${esc(fmtRate(rate.tx))}<small> ↑</small>`
+    : (S.net && S.net.dev ? '<small>…</small>' : '<small>无 WAN 口</small>');
+  /* 卡片只显示设备总数；v4/v6 明细留在弹层里 */
+  const devTotal = S.devices ? S.devices.length : null;
+  /* IPv6 地址很长：只显示前一半 + …，title 悬停看完整值 */
+  const v6Full = S.net && S.net.v6 ? S.net.v6 : null;
+  const v6Txt = v6Full ? (v6Full.length > 20
+    ? esc(v6Full.slice(0, Math.floor(v6Full.length / 2))) + '<small>…</small>'
+    : esc(v6Full)) : null;
+  si.style.display = '';
+  si.innerHTML = `
+    <div class="cell"><div class="k">设备</div><div class="v" title="${esc(model)}">${esc(model)}</div></div>
+    <div class="cell"><div class="k">运行时间</div><div class="v">${esc(fmtUptime(info.uptime))}</div></div>
+    <div class="cell"><div class="k">负载（1 分钟）</div><div class="v${loadWarn ? ' warn' : ''}">${esc(load)}${cores ? `<small> / ${cores} 核</small>` : ''}</div></div>
+    <div class="cell"><div class="k">内存${usedPct !== null ? `（已用 ${usedPct}%）` : ''}</div>
+      <div class="v${memWarn ? ' warn' : ''}">${m.total ? esc((base / 1048576).toFixed(0)) + '<small> MB / ' + esc((m.total / 1048576).toFixed(0)) + ' MB</small>' : '?'}</div></div>
+    ${disks ? disks.map(diskCell).join('') : '<div class="cell"><div class="k">磁盘</div><div class="v">?</div></div>'}
+    <div class="cell clickable" data-act="devices" title="点击查看设备名称与 IP">
+      <div class="k">在线设备</div>
+      <div class="v">${devTotal !== null ? devTotal : '?'}</div>
+      <span class="more" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+        stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></span></div>
+    <div class="cell clickable" data-act="ipapprove" title="点击审批 50000 端口的待审批 IP">
+      <div class="k">IP 审批</div>
+      <div class="v" id="ipapCellN">${window.ipapPendingCount ? window.ipapPendingCount() : '?'}</div>
+      <span class="more" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+        stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></span></div>
+    <div class="cell"><div class="k">WAN IPv4</div><div class="v">${S.net && S.net.v4 ? esc(S.net.v4) : '<small>未连接</small>'}</div></div>
+    <div class="cell"><div class="k">WAN IPv6</div><div class="v" title="${v6Full ? esc(v6Full) : ''}">${v6Txt ? v6Txt : '<small>未连接</small>'}</div></div>
+    <div class="cell"><div class="k">WAN 速率</div><div class="v" title="${rateTxt}">${rateTxt}</div></div>`;
+}
+
+function draw() {
+  $('list').innerHTML = ITEMS.map(it => {
+    const st = S.status[it.name] || { on: false, source: 'guess', enabled: null, known: false };
+    const label = st.known ? (st.on ? (it.type === 'service' ? '运行中' : '已启用')
+                                    : (it.type === 'service' ? '已停止' : '已禁用'))
+                           : '未找到';
+    const cls = !st.known ? ' warn'
+      : (st.source === 'guess' ? ' guess' : (st.on ? '' : ' off'));
+    const tip = st.known && st.source === 'guess'
+      ? ' title="该脚本未提供实时运行态，按本页上次操作推定"' : '';
+    const mark = st.known && st.source === 'guess' ? ' ·推定' : '';
+    return `<div class="cell item">
+      <div class="top"><b title="${esc(it.name)}">${esc(it.name)}</b>
+        <div class="sw${st.known && st.on ? ' on' : ''}" data-name="${esc(it.name)}"
+             role="switch" aria-checked="${!!st.on}" aria-label="${esc(it.desc)}" tabindex="0"></div></div>
+      <div class="d">${esc(it.desc)}</div>
+      <span class="badge${cls}"${tip}>${label}${mark}</span>
+    </div>`;
+  }).join('');
+  drawSysInfo();
+  $('lastUpdate').innerHTML = '状态更新于 '
+    + new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    + ' · <span id="nextIn"></span>'
+    + (S.rcAvailable ? '' : ' · 服务运行态实时查询不可用');
+  lastNextTxt = null;                       /* 页脚刚重建，#nextIn 是全新元素，缓存作废 */
+  tickNext();                               /* 立即补一次文案；锚点由 startPolling 统一维护 */
+}
+
+async function toggle(name, el) {
+  if (S.busy) return;
+  const it = ITEMS.find(i => i.name === name);
+  if (!it) return;
+  const cur = S.status[name] ? !!S.status[name].on : false;
+  const to = !cur;
+  S.busy = true;
+  if (el) el.classList.add('busy');
+  const card = el ? el.closest('.item') : null;
+  const badgeEl = card ? card.querySelector('.badge') : null;
+  if (badgeEl) {                       /* 徽章临时切到「处理中」，refresh() 重绘后自动恢复 */
+    badgeEl.className = 'badge loading';
+    badgeEl.textContent = '处理中…';
+  }
+  try {
+    if (it.type === 'service') {
+      await applyService(name, to);      /* 只发 start 或 stop */
+      saveGuess(name, to);
+    } else {
+      await applyRedirect(name, to);     /* uci set -> apply -> reload */
+    }
+    await queryItemStatus(it);           /* 只查本条目的结果 */
+    draw();
+    const verb = it.type === 'service' ? (to ? '启动' : '停止') : (to ? '启用' : '禁用');
+    toast(`${name} 已${verb}`);
+  } catch (e) {
+    if (!(e instanceof SessionError)) toast('操作失败：' + e.message, true);
+    try { await refresh(); } catch (_) { /* 会话已失效 */ }
+  } finally {
+    if (el) el.classList.remove('busy');
+    S.busy = false;
+    if (S.token) startPolling();         /* 操作完重新计时，别让用户刚动完就被刷一遍 */
+  }
+}
+
+/* ==================== 轮询 ==================== */
+/* 只有一条计时器：倒计时和实际刷新共用同一个锚点 nextRefreshAt，
+   到点即由 tickNext 发请求。以前是「1s 计时器管显示 + 30s setInterval 管刷新」，
+   两条计时器相位会漂移（锚点还要等刷新结束才重设），于是出现「还写着 1 秒后刷新，后台已经在刷新」 */
+const TICK_MS = 250;                /* 检查精度（比 1s 细，收敛「最后一秒」的错位）；文本只在变化时写 DOM */
+let nextRefreshAt = 0;              /* 下一次刷新的绝对时刻，0 = 未启动 */
+let pollLive = false;               /* 轮询开关 */
+let refreshing = false;             /* 刷新进行中，防重入 */
+let lastNextTxt = null;
+
+function setNextTxt(el, t) {
+  if (t === lastNextTxt) return;
+  lastNextTxt = t;
+  el.textContent = t;
+}
+
+function tickNext() {
+  const el = $('nextIn');
+  if (!el) return;
+  if (!S.token) { setNextTxt(el, ''); return; }
+  if (document.hidden) { setNextTxt(el, '刷新已暂停'); return; }
+  if (S.busy) { setNextTxt(el, '操作中…'); return; }
+  if (refreshing) { setNextTxt(el, '正在刷新…'); return; }
+  if (!pollLive || !nextRefreshAt) { setNextTxt(el, ''); return; }
+  if (Date.now() >= nextRefreshAt) {
+    nextRefreshAt = 0;                       /* 先摘掉锚点，避免同一次到点重复触发 */
+    refreshing = true;
+    setNextTxt(el, '正在刷新…');
+    refresh().catch(e => {
+      if (!(e instanceof SessionError)) toast('刷新失败：' + e.message, true);
+    }).finally(() => {
+      refreshing = false;
+      /* 正常路径 refresh 尾部已 startPolling 重置锚点；这里只兜底刷新抛错的情况 */
+      if (pollLive && !nextRefreshAt) startPolling();
+    });
+    return;
+  }
+  const s = Math.max(1, Math.ceil((nextRefreshAt - Date.now()) / 1000));
+  setNextTxt(el, s + ' 秒后刷新');
+}
+setInterval(tickNext, TICK_MS);
+
+function startPolling() {
+  pollLive = true;
+  nextRefreshAt = Date.now() + REFRESH_MS;
+  tickNext();
+}
+function stopPolling() {
+  pollLive = false;
+  nextRefreshAt = 0;
+  lastNextTxt = null;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !S.token || S.busy || refreshing) return;
+  refreshing = true;                        /* 切回前台立刻补一次，走同一条刷新通路 */
+  refresh().catch(e => {
+    if (!(e instanceof SessionError)) toast('刷新失败：' + e.message, true);
+  }).finally(() => {
+    refreshing = false;
+    if (pollLive && !nextRefreshAt) startPolling();
+  });
+});
+
+/* ==================== 通用 ==================== */
+let tTimer;
+function toast(m, err) {
+  const t = $('toast'); t.textContent = m;
+  t.style.borderColor = err ? 'var(--red)' : 'var(--line)';
+  t.classList.add('show');
+  clearTimeout(tTimer);
+  tTimer = setTimeout(() => t.classList.remove('show'), 2400);
+}
+
+/* ==================== 设备明细弹层 ==================== */
+function openDevices() {
+  if (!S.devices) { toast('设备信息尚未获取，稍后重试', true); return; }
+  const list = S.devices;
+  const v4n = list.filter(d => d.v4.length).length;
+  const v6n = list.filter(d => d.v6.length).length;
+  $('devCnt').textContent = `共 ${list.length} 台 · ${v4n} 有 v4 / ${v6n} 有 v6`;
+  $('devList').innerHTML = list.map(d => {
+    const name = d.name || (d.mac ? '未命名设备' : '仅 DUID 设备');
+    const mac = d.mac
+      ? esc(d.mac)
+      : 'DUID ' + esc(String(d.key).replace(/^duid:/i, '').slice(0, 12)) + '…';
+    const addrs = [
+      ...d.v4.map(ip => `<span><i class="tag v4">v4</i>${esc(ip)}</span>`),
+      ...d.v6.map(ip => `<span><i class="tag v6">v6</i>${esc(ip)}</span>`),
+    ].join('');
+    return `<div class="devrow">
+      <div class="n"><b title="${esc(name)}">${esc(name)}</b><span class="mac">${mac}</span></div>
+      <div class="a">${addrs || '<span>无地址</span>'}</div>
+    </div>`;
+  }).join('') || '<div class="devrow">未获取到设备信息</div>';
+  $('devModal').classList.add('show');
+}
+function closeDevices() { $('devModal').classList.remove('show'); }
+
+/* ==================== 初始化 ==================== */
+/* 会话来源优先级：LuCI cookie > 本页 sessionStorage > 登录框。
+   首屏固定先显示「正在检测登录状态」，检测完再决定进面板还是登录框；
+   检测太快（缓存命中）也至少停留 BOOT_MIN_MS，避免一帧闪过的突兀感。 */
+const BOOT_MIN_MS = 450;
+const waitBootMin = async t0 => {
+  const d = BOOT_MIN_MS - (Date.now() - t0);
+  if (d > 0) await new Promise(r => setTimeout(r, d));
+};
+
+/* CPU 核数：rpcd 没有暴露核数的接口（system.info 只有 load/uptime/memory，
+   luci 也没有 getCPUCoreFreq），所以把核数内联在 <body data-cores="N"> 里，部署时按目标机器写入。
+   缺失/非法时 S.cores 保持 0，负载卡片只显示数字，不猜 */
+function readCores() {
+  const n = parseInt(document.body.getAttribute('data-cores') || '', 10);
+  if (Number.isFinite(n) && n > 0 && n <= 1024) S.cores = n;
+}
+
+async function bootstrap() {
+  const t0 = Date.now();
+  readCores();
+  const own = sessionStorage.getItem(TOKEN_KEY);
+  if (own && await probeToken(own)) {
+    S.token = own; S.tokenFrom = 'self';
+    await waitBootMin(t0);
+    showPanel();
+    await refresh();
+    startPolling();
+    return;
+  }
+  /* 本页会话不可用：检测结束，切到登录框 */
+  await waitBootMin(t0);
+  showView('login');
+}
+
+(function init() {
+  applyBootHeight();                        /* 检测态框体先对齐主面板高度 */
+  window.addEventListener('resize', () => { if (!panelReady) applyBootHeight(); });
+  $('btnLogin').addEventListener('click', login);
+  $('pass').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+  $('list').addEventListener('click', e => {
+    const sw = e.target.closest('.sw');
+    if (sw) toggle(sw.dataset.name, sw);
+  });
+  $('list').addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const sw = e.target.closest('.sw');
+    if (sw) { e.preventDefault(); toggle(sw.dataset.name, sw); }
+  });
+  /* 在线设备卡片 -> 明细弹层 */
+  $('sysinfo').addEventListener('click', e => {
+    if (e.target.closest('.cell[data-act="devices"]')) openDevices();
+    if (e.target.closest('.cell[data-act="ipapprove"]') && window.ipapOpen) ipapOpen();
+  });
+  $('devClose').addEventListener('click', closeDevices);
+  $('devModal').addEventListener('click', e => {
+    if (e.target.id === 'devModal') closeDevices();       /* 点遮罩关闭 */
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeDevices();
+  });
+
+  if (S.demo) $('pass').placeholder = '演示模式：任意密码即可';
+
+  bootstrap().catch(e => {
+    forceLogout('');
+    showErr('会话恢复失败：' + e.message);
+  });
+})();
+</script>
+<!-- ============ IP 审批弹层（面板卡片点击弹出，复用 LuCI 会话鉴权） ============ -->
+<style>
+  #ipapModal{position:fixed;inset:0;background:rgba(8,12,20,.72);display:none;
+    align-items:center;justify-content:center;padding:20px;z-index:50}
+  #ipapModal.show{display:flex}
+  #ipapModal .modal-box{width:min(780px,96vw)}
+  #ipapModal .modal-body{overflow:auto;padding:4px 18px 16px;-webkit-overflow-scrolling:touch}
+  #ipapModal table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+  #ipapModal th:last-child,#ipapModal td:last-child{width:180px}
+  #ipapModal th.ck,#ipapModal td.ck{width:36px;text-align:center}
+  #ipapModal td.ck input{margin:0;vertical-align:middle;cursor:pointer}
+  #ipapModal th,#ipapModal td{padding:5px 8px;border-bottom:1px solid rgba(128,128,128,.25);text-align:left}
+  #ipapModal td span.ip,#ipapModal td.ip{font-family:ui-monospace,Menlo,monospace}
+  #ipapModal td span.ip,#ipapModal td span.t{display:block}
+  #ipapModal td span.t{font-size:11px;color:var(--muted);margin-top:2px}
+  #ipapModal button{cursor:pointer;border:1px solid rgba(128,128,128,.4);border-radius:6px;
+    padding:4px 12px;font-size:13px;background:transparent;color:inherit;margin-right:6px;width:auto}
+  #ipapModal button.ok:hover{background:#16a34a;color:#fff;border-color:#16a34a}
+  #ipapModal button.no:hover{background:#dc2626;color:#fff;border-color:#dc2626}
+  #ipapModal td .btns{display:flex;gap:8px}
+  #ipapModal td button.ok,#ipapModal td button.no{margin:0;padding:8px 18px;font-size:14px;border-radius:8px;min-width:72px}
+  #ipapModal .ipap-empty{color:var(--muted);font-size:13px;padding:8px 0}
+  #ipapModal .ipap-search{margin:10px 0 4px}
+  #ipapModal .ipap-search input{width:100%;max-width:320px;padding:7px 10px;font-size:13px;background:transparent;
+    border:1px solid var(--line);border-radius:8px;margin:0;color:inherit}
+  #ipapModal .ipap-msg{font-size:12px;color:var(--blue);margin:6px 0;min-height:14px}
+  #ipapModal .ipap-pager{display:flex;align-items:center;justify-content:center;gap:12px;padding:8px 0 2px;font-size:12px;color:var(--muted)}
+  #ipapModal .ipap-pager button.pg{margin:0}
+  #ipapModal .ipap-pager button.pg:disabled{opacity:.4;cursor:default}
+  #ipapModal .ipap-batch{display:flex;align-items:center;gap:10px;padding:8px 0;font-size:13px;flex-wrap:wrap}
+  #ipapModal .ipap-batch button{margin-right:0;white-space:nowrap;
+    padding:8px 18px;font-size:14px;border-radius:8px;min-width:72px}
+  #ipapModal .ipap-batch .n{color:var(--blue);font-weight:600}
+  #ipapModal .ipap-batch button:disabled{opacity:.4;cursor:default}
+</style>
+<div id="ipapModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <b>IP 审批 · 待处理队列</b><span class="cnt" id="ipap-count"></span>
+      <button type="button" id="ipapClose">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:12px;color:var(--muted);margin-top:8px">批准 → 加入 ip-allow 放行；拒绝 → 加入 ip-deny 永久丢弃。50000 端口未审批连接会被静默拒绝并进入此队列。</div>
+      <div class="ipap-search"><input id="ipap-q" placeholder="按时间搜索，如 14:13 / 11-21" onblur="ipapFilter()" onkeydown="if(event.key==='Enter')this.blur()"></div>
+      <div class="ipap-msg" id="ipap-msg"></div>
+      <div id="ipap-body"><div class="ipap-empty">加载中…</div></div>
+      <div class="ipap-batch" id="ipap-batch">
+        <span>已选 <span class="n" id="ipap-batch-n">0</span> 条</span>
+        <button id="ipap-batch-ok" class="ok" onclick="ipapBatchAct('approve')" disabled>批准所选</button>
+        <button id="ipap-batch-no" class="no" onclick="ipapBatchAct('deny')" disabled>拒绝所选</button>
+        <button onclick="ipapClearSel()" disabled id="ipap-batch-clear">取消选择</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  const modal = document.getElementById('ipapModal');
+  const PAGE_SIZE = 10;
+  let allRows = [];      // 全量待审批数据
+  let page = 1;          // 当前页（1 起）
+  let selected = new Set();  // 已勾选的 IP（跨分页保留）
+
+  /* 面板卡片数字：draw() 模板直接调用 */
+  window.ipapPendingCount = function(){ return allRows.length; };
+
+  function setCell(n){
+    const el = document.getElementById('ipapCellN');
+    if (el) el.textContent = n;
+  }
+
+  function ipapBatchUI(){
+    document.getElementById('ipap-batch-n').textContent = selected.size;
+    const dis = selected.size === 0;
+    document.getElementById('ipap-batch-ok').disabled = dis;
+    document.getElementById('ipap-batch-no').disabled = dis;
+    document.getElementById('ipap-batch-clear').disabled = dis;
+  }
+  window.ipapSel = function(cb, ip){
+    if(cb.checked) selected.add(ip); else selected.delete(ip);
+    ipapBatchUI();
+  };
+  window.ipapAll = function(on){   // 表头复选框：全选/取消当前页
+    const start = (page-1)*PAGE_SIZE;
+    filteredRows().slice(start, start+PAGE_SIZE).forEach(r => on ? selected.add(r.ip) : selected.delete(r.ip));
+    ipapGo(page);
+  };
+  window.ipapClearSel = function(){ selected.clear(); ipapGo(page); };
+  window.ipapToggleRow = function(ip){   // 点 IP/时间单元格切换选中
+    selected.has(ip) ? selected.delete(ip) : selected.add(ip);
+    ipapGo(page);
+  };
+  window.ipapCopy = function(ip){        // 复制 IP 到剪贴板（HTTP 页面走 execCommand 兜底）
+    const msgEl = document.getElementById('ipap-msg');
+    const done = ok => {
+      if (msgEl && ok) {
+        msgEl.textContent = '已复制 ' + ip;
+        setTimeout(() => { if (msgEl.textContent === '已复制 ' + ip) msgEl.textContent = ''; }, 1500);
+      }
+    };
+    const fallback = () => {
+      const ta = document.createElement('textarea');
+      ta.value = ip;
+      ta.style.cssText = 'position:fixed;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch(e){}
+      document.body.removeChild(ta);
+      done(ok);
+    };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(ip).then(() => done(true)).catch(fallback);
+    else fallback();
+  };
+
+  function filteredRows(){
+    const kw = (document.getElementById('ipap-q').value || '').trim();
+    if(!kw) return allRows;
+    return allRows.filter(r => (r.time||'').indexOf(kw) !== -1);
+  }
+  function totalPages(){ return Math.max(1, Math.ceil(filteredRows().length / PAGE_SIZE)); }
+  window.ipapFilter = function(){ page = 1; ipapGo(1); };
+
+  window.ipapGo = function(p){
+    const body = document.getElementById('ipap-body');
+    const rowsAll = filteredRows();
+    page = Math.min(Math.max(1, p), totalPages());
+    document.getElementById('ipap-count').textContent =
+      rowsAll.length ? (rowsAll.length===allRows.length ? '共 '+allRows.length+' 条' : '匹配 '+rowsAll.length+' / '+allRows.length+' 条') : '队列为空';
+    if(!rowsAll.length){ body.innerHTML = '<div class="ipap-empty">'+(allRows.length?'没有匹配该时间的记录。':'队列为空，没有待审批的 IP。')+'</div>'; ipapBatchUI(); return; }
+    const start = (page-1)*PAGE_SIZE;
+    const rows = rowsAll.slice(start, start+PAGE_SIZE);
+    const allOn = rows.every(r => selected.has(r.ip));
+    let html = '<table><tr><th class="ck"><input type="checkbox"'+(allOn?' checked':'')+' onchange="ipapAll(this.checked)" title="全选当前页"></th><th>IP / 时间</th><th>操作</th></tr>';
+    for(const row of rows){
+      html += '<tr><td class="ck"><input type="checkbox"'+(selected.has(row.ip)?' checked':'')+' onchange="ipapSel(this,\''+row.ip+'\')"></td>'
+            + '<td class="ip" style="cursor:pointer" onclick="ipapToggleRow(\''+row.ip+'\');ipapCopy(\''+row.ip+'\')" title="点击选中/取消选中，同时复制 IP"><span class="ip">'+row.ip+'</span><span class="t">时间 '+(row.time||'')+(row.port && row.port !== '-' ? ' 端口 '+row.port : '')+'</span></td>'
+            + '<td><div class="btns"><button class="ok" onclick="ipapAct(\'approve\',\''+row.ip+'\')">批准</button>'
+            + '<button class="no" onclick="ipapAct(\'deny\',\''+row.ip+'\')">拒绝</button></div></td></tr>';
+    }
+    html += '</table>';
+    if(totalPages() > 1){
+      html += '<div class="ipap-pager">'
+            + '<button class="pg" onclick="ipapGo('+(page-1)+')"'+(page<=1?' disabled':'')+'>上一页</button>'
+            + '<span>第 '+page+' / '+totalPages()+' 页 · 共 '+rowsAll.length+' 条</span>'
+            + '<button class="pg" onclick="ipapGo('+(page+1)+')"'+(page>=totalPages()?' disabled':'')+'>下一页</button>'
+            + '</div>';
+    }
+    body.innerHTML = html;
+    ipapBatchUI();
+  };
+
+  /* 弹层内完整刷新（打开时用） */
+  window.ipapRefresh = async function(){
+    document.getElementById('ipap-msg').textContent = '';
+    try{
+      const r = await fetch('/cgi-bin/luci/admin/ipapprove/run?action=list',{cache:'no-store'});
+      const j = await r.json();
+      if(!j.ok){
+        if(j.error==='unauthorized'){ modal.classList.remove('show'); return; }
+        document.getElementById('ipap-body').innerHTML = '<div class="ipap-empty">加载失败：'+(j.error||'')+'</div>';
+        return;
+      }
+      allRows = j.rows || [];
+      selected = new Set([...selected].filter(ip => allRows.some(r => r.ip === ip)));
+      setCell(allRows.length);
+      page = Math.min(page, totalPages());
+      ipapGo(page);
+    }catch(e){ modal.classList.remove('show'); }
+  };
+
+  /* 轻量同步：面板 refresh 周期调用，只更新数量与缓存；弹层开着才重渲染 */
+  window.ipapCountSync = async function(){
+    try{
+      const r = await fetch('/cgi-bin/luci/admin/ipapprove/run?action=list',{cache:'no-store'});
+      const j = await r.json();
+      if(j.ok){
+        allRows = j.rows || [];
+        selected = new Set([...selected].filter(ip => allRows.some(r => r.ip === ip)));
+        setCell(allRows.length);
+        if(modal.classList.contains('show')){ page = Math.min(page, totalPages()); ipapGo(page); }
+      }else{
+        setCell('?');
+        modal.classList.remove('show');
+      }
+    }catch(e){ setCell('?'); }
+  };
+
+  /* 打开/关闭弹层（面板卡片点击 / 关闭按钮 / 遮罩 / Escape） */
+  window.ipapOpen = function(){
+    document.getElementById('ipap-body').innerHTML = '<div class="ipap-empty">加载中…</div>';
+    document.getElementById('ipap-msg').textContent = '';
+    modal.classList.add('show');
+    ipapRefresh();
+  };
+  window.ipapClose = function(){ modal.classList.remove('show'); };
+
+  async function ipapPost(act, ips){
+    const r = await fetch('/cgi-bin/luci/admin/ipapprove/run',{
+      method:'POST', credentials:'same-origin', cache:'no-store',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:act, ips:ips})
+    });
+    return await r.json();
+  }
+  window.ipapAct = async function(act, ip){
+    const msg = document.getElementById('ipap-msg');
+    try{
+      const j = await ipapPost(act, [ip]);
+      const n = (j.done||[]).length;
+      if(j.ok && n > 0){
+        msg.textContent = (act==='approve'?'已批准 ':'已拒绝 ')+ip;
+        setTimeout(ipapRefresh, 100);
+      }else{
+        const err = j.error || (j.failed&&j.failed[0]&&j.failed[0].error) || '未生效';
+        msg.textContent = '操作未生效：'+err;
+        setTimeout(ipapRefresh, 300);
+      }
+    }catch(e){ msg.textContent = '请求失败：'+e; }
+  };
+  window.ipapBatchAct = async function(act){
+    const msg = document.getElementById('ipap-msg');
+    const ips = [...selected];
+    if(!ips.length) return;
+    msg.textContent = '批量'+(act==='approve'?'批准':'拒绝')+'中… 共 '+ips.length+' 条';
+    try{
+      const j = await ipapPost(act, ips);
+      if(!j.ok){
+        msg.textContent = '操作失败：'+(j.error||'');
+        setTimeout(ipapRefresh, 300);
+        return;
+      }
+      const n = (j.done||[]).length, f = (j.failed||[]).length;
+      msg.textContent = '批量'+(act==='approve'?'批准':'拒绝')+'完成：成功 '+n+'，失败 '+f+(f?'（未在队列或无效 IP）':'');
+      selected.clear();
+      setTimeout(ipapRefresh, 100);
+    }catch(e){ msg.textContent = '请求失败：'+e; }
+  };
+
+  document.getElementById('ipapClose').addEventListener('click', ipapClose);
+  modal.addEventListener('click', e => { if (e.target.id === 'ipapModal') ipapClose(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && modal.classList.contains('show')) ipapClose();
+  });
+
+  /* 数量同步跟随面板自身的 30 秒刷新周期（refresh() 内调用 ipapCountSync），未登录不发请求 */
+})();
+</script>
