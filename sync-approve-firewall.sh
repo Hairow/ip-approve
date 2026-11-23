@@ -39,12 +39,12 @@ ip_deny6|ipv6|拒绝的ip(v6)|/etc/ip-approve/ip-deny6.list
 ip_pending6|ipv6|待审批ip(v6,运行时)|'
 
 # input 审批规则表: name|ipset|target|family|log(可空)
-RULES_DEF='ip-deny-drop|ip_deny|DROP|ipv4|
-ip-allow-accept|ip_allow|ACCEPT|ipv4|
-ip-pending-reject|ip_pending|REJECT|ipv4|1
-ip-deny-drop6|ip_deny6|DROP|ipv6|
-ip-allow-accept6|ip_allow6|ACCEPT|ipv6|
-ip-pending-reject6|ip_pending6|REJECT|ipv6|1'
+RULES_DEF='ip4-deny-drop|ip_deny|DROP|ipv4|
+ip4-allow-accept|ip_allow|ACCEPT|ipv4|
+ip4-pending-reject|ip_pending|REJECT|ipv4|1
+ip6-deny-drop|ip_deny6|DROP|ipv6|
+ip6-allow-accept|ip_allow6|ACCEPT|ipv6|
+ip6-pending-reject|ip_pending6|REJECT|ipv6|1'
 
 # fnOS 转发审批组（src=wan dest=lan, family=ipv6, dest_port 固定）: name|ipset(可空)|target|log(可空)
 # 渲染顺序必须在 Allow-fnos-Web6 等 cn 白名单 accept 之后（append 到 uci 末尾自然满足）
