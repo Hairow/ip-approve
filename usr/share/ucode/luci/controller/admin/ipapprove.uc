@@ -6,7 +6,7 @@
 
 import { popen } from 'fs';
 
-const IP_RE = /^[0-9a-fA-F.:]{1,45}$/;
+const IP_RE = /^[0-9a-fA-F.:/]{1,50}$/;   // 支持纯 IP 与 CIDR 网段（黑名单里有 5.231.242.0/24）
 const MAX_IPS = 500;
 
 function shell_quote(s) {
@@ -45,11 +45,12 @@ return {
 				ips = [ip];
 		}
 
-		if (action != 'list' && action != 'approve' && action != 'deny') {
+		if (action != 'list' && action != 'denylist' && action != 'approve'
+		    && action != 'deny' && action != 'unban') {
 			json_err('bad action');
 			return;
 		}
-		if (action != 'list' && length(ips) == 0) {
+		if (action != 'list' && action != 'denylist' && length(ips) == 0) {
 			json_err('no valid ip');
 			return;
 		}

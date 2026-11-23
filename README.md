@@ -7,8 +7,8 @@
 | 依赖 | 用途 | 必需性 |
 |------|------|--------|
 | OpenWrt/iStoreOS（fw4 + nftables） | 防火墙规则与 ipset 集合 | 必需 |
-| LuCI + rpcd | 审批面板（ipapprove.uc 控制器 + menu.d 菜单）、switch.html 走 /ubus 调用 | 必需（面板部分） |
-| `/www/cgi-bin/ip-approve` | 实际执行批准/拒绝（写 nft + 名单文件）的 CGI，LuCI 与钉钉链路共用 | 必需 |
+| LuCI + rpcd | 审批面板（ipapprove.uc 控制器 + menu.d 菜单）、switch.html 走自建 switchboard 控制器 | 必需（面板部分） |
+| `/www/cgi-bin/ip-approve` | 实际执行批准/拒绝/黑名单移除（写 nft + 名单文件）的 CGI，LuCI 与钉钉链路共用 | 必需 |
 | ucode（luci.controller 框架） | ipapprove.uc 面板接口 | 必需（面板部分） |
 | openssl | HMAC-SHA256 签名/验签（钉钉加签 + 快捷链接） | 必需 |
 | busybox curl | 推送钉钉 | 必需 |
@@ -23,7 +23,8 @@
 | 文件/目录 | 作用 |
 |-----------|------|
 | approved.conf | 配置：钉钉 webhook/加签密钥、4 个端口变量（INPUT/FORWARD_APPROVE_PORT4/6）、QUICK_SECRET、QUICK_URL |
-| pending.list | 待审批 IP 队列（IP + 时间） |
+| pending.list | 待审批 IP 队列（IP + 时间 + 端口） |
+| switch.html | 面板：设备/WAN/磁盘/服务开关 + IP 审批弹层 + IP 黑名单弹层（移除黑名单走 unban action） |
 | ip-allow.list / ip-allow6.list | 批准名单（写入 nft ip_allow / ip_allow6） |
 | ip-deny.list / ip-deny6.list | 拒绝名单（写入 nft ip_deny / ip_deny6） |
 | cgi-bin/ip-approve | 审批执行核心（路由器上位于 /www/cgi-bin/ip-approve）：flock 原子更新 pending/allow/deny 底账与 nft 集合，面板/钉钉/CLI 三入口共用 |

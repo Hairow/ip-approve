@@ -31,6 +31,20 @@ valid_ip4() {
 valid_ip6() {
     echo "$1" | grep -qE '^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F:.]{1,4}$' || return 1
 }
+# 名单条目：纯 IP 或 CIDR 网段（deny.list 里既有 223.104.195.18 也有 5.231.242.0/24）
+valid_entry() {
+    case "$1" in
+        */*)
+            local addr="${1%/*}" prefix="${1##*/}"
+            echo "$prefix" | grep -qE '^[0-9]+$' || return 1
+            case "$addr" in
+                *:*) valid_ip6 "$addr" || return 1; [ "$prefix" -le 128 ] 2>/dev/null || return 1;;
+                *)   valid_ip4 "$addr" || return 1; [ "$prefix" -le 32 ] 2>/dev/null || return 1;;
+            esac;;
+        *:*) valid_ip6 "$1" || return 1;;
+        *)   valid_ip4 "$1" || return 1;;
+    esac
+}
 
 # ---- 失败明细（JSON 拼接）----
 FAILED_JSON="["
@@ -56,6 +70,89 @@ action_list() {
     done < "$CN/pending.list"
     rows="$rows]"
     json_out "{\"ok\":true,\"rows\":$rows}"
+    exit 0
+}
+
+# 黑名单列表：读 ip-deny.list(v4) + ip-deny6.list(v6)，带 family 标签
+action_denylist() {
+    local rows="[" first=1 ip fam f
+    for fam in v4 v6; do
+        if [ "$fam" = v4 ]; then f="$CN/ip-deny.list"; else f="$CN/ip-deny6.list"; fi
+        while read -r ip; do
+            [ -n "$ip" ] || continue
+            case "$ip" in \#*|';'*) continue;; esac   # 跳过注释行
+            [ $first = 1 ] && first=0 || rows="$rows,"
+            rows="$rows{\"ip\":\"$ip\",\"family\":\"$fam\"}"
+        done < "$f" 2>/dev/null
+    done
+    rows="$rows]"
+    json_out "{\"ok\":true,\"rows\":$rows}"
+    exit 0
+}
+
+# 从黑名单移除（支持批量）：入口已吃掉 action，参数直接是 IP/CIDR 列表
+action_unban() {
+    local ok4="" ok6="" ip
+    for ip in "$@"; do
+        case "$ip" in
+            *:*) if valid_entry "$ip"; then ok6="$ok6 $ip"; else fail_add "$ip" "bad-entry"; fi;;
+            *)   if valid_entry "$ip"; then ok4="$ok4 $ip"; else fail_add "$ip" "bad-entry"; fi;;
+        esac
+    done
+    local okips="${ok4# }"
+    [ -n "${ok6# }" ] && okips="${okips:+$okips }${ok6# }"
+    [ -n "$okips" ] || fail "no-valid-entry"
+
+    # flock 内原子更新两份名单；记录实际命中的条目
+    rm -f /tmp/.ipap.unban.done /tmp/.ipap.unban.lockrc
+    (
+        flock -n 9 || exit 1
+        : > /tmp/.ipap.unban.done
+        for ip in $ok4; do
+            grep -qxF "$ip" "$CN/ip-deny.list" 2>/dev/null || continue
+            echo "$ip" >> /tmp/.ipap.unban.done
+            grep -vxF "$ip" "$CN/ip-deny.list" > /tmp/.deny4.new 2>/dev/null
+            mv /tmp/.deny4.new "$CN/ip-deny.list"
+        done
+        for ip in $ok6; do
+            grep -qxF "$ip" "$CN/ip-deny6.list" 2>/dev/null || continue
+            echo "$ip" >> /tmp/.ipap.unban.done
+            grep -vxF "$ip" "$CN/ip-deny6.list" > /tmp/.deny6.new 2>/dev/null
+            mv /tmp/.deny6.new "$CN/ip-deny6.list"
+        done
+        echo ok > /tmp/.ipap.unban.lockrc
+    ) 9>"$PIDF_LOCK"
+
+    [ -f /tmp/.ipap.unban.lockrc ] || fail "op-failed"
+    rm -f /tmp/.ipap.unban.lockrc
+
+    # 未命中的报 not-in-denylist
+    local done_ips="" h4="" h6=""
+    for ip in $(cat /tmp/.ipap.unban.done 2>/dev/null); do done_ips="$done_ips $ip"; done
+    done_ips="${done_ips# }"
+    for ip in $okips; do
+        case " $done_ips " in
+            *" $ip "*) ;;
+            *) fail_add "$ip" "not-in-denylist";;
+        esac
+    done
+    for ip in $done_ips; do
+        case "$ip" in
+            *:*) h6="${h6:+$h6, }$ip";;
+            *)   h4="${h4:+$h4, }$ip";;
+        esac
+    done
+
+    # 即时从 nft set 删元素，再后台同步文件与集合
+    [ -n "$h4" ] && nft delete element inet fw4 ip_deny  "{ $h4 }" >/dev/null 2>&1
+    [ -n "$h6" ] && nft delete element inet fw4 ip_deny6 "{ $h6 }" >/dev/null 2>&1
+    ( fw4 reload-sets >/dev/null 2>&1 & )
+
+    local dj="[" df=1
+    for ip in $done_ips; do [ $df = 1 ] && df=0 || dj="$dj,"; dj="$dj\"$ip\""; done
+    dj="$dj]"
+    FAILED_JSON="$FAILED_JSON]"
+    json_out "{\"ok\":true,\"action\":\"unban\",\"done\":$dj,\"failed\":$FAILED_JSON}"
     exit 0
 }
 
@@ -147,6 +244,7 @@ fi
 
 case "$ACTION" in
     list) action_list;;
+    denylist) action_denylist;;
     approve|deny)
         if [ -n "$IPAPPROVE_SELFTEST" ]; then
             [ $# -ge 1 ] || fail "missing ip"
@@ -154,6 +252,15 @@ case "$ACTION" in
         else
             [ -n "$IP" ] || fail "missing ip"
             action_set "$ACTION" "$IP"
+        fi
+        ;;
+    unban)
+        if [ -n "$IPAPPROVE_SELFTEST" ]; then
+            [ $# -ge 1 ] || fail "missing ip"
+            action_unban "$@"
+        else
+            [ -n "$IP" ] || fail "missing ip"
+            action_unban "$IP"
         fi
         ;;
     *) fail "missing action";;
