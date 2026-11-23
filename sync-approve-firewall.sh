@@ -42,9 +42,11 @@ ip_pending6|ipv6|待审批ip(v6,运行时)|'
 RULES_DEF='ip4-deny-drop|ip_deny|DROP|ipv4|
 ip4-allow-accept|ip_allow|ACCEPT|ipv4|
 ip4-pending-reject|ip_pending|REJECT|ipv4|1
+ip4-probe-log||REJECT|ipv4|1
 ip6-deny-drop|ip_deny6|DROP|ipv6|
 ip6-allow-accept|ip_allow6|ACCEPT|ipv6|
-ip6-pending-reject|ip_pending6|REJECT|ipv6|1'
+ip6-pending-reject|ip_pending6|REJECT|ipv6|1
+ip6-probe-log||REJECT|ipv6|1'
 
 # fnOS 转发审批组（src=wan dest=lan, family=ipv6, dest_port 固定）: name|ipset(可空)|target|log(可空)
 # 渲染顺序必须在 Allow-fnos-Web6 等 cn 白名单 accept 之后（append 到 uci 末尾自然满足）
@@ -103,7 +105,7 @@ while IFS='|' read -r name ipset target fam log; do
     rid=$(uci add firewall rule) || { echo "错误: 创建规则 $name 失败" >&2; exit 1; }
     uci set firewall.$rid.name="$name"
     uci set firewall.$rid.src='wan'
-    uci set firewall.$rid.ipset="$ipset"
+    [ -n "$ipset" ] && uci set firewall.$rid.ipset="$ipset"
     uci set firewall.$rid.target="$target"
     uci set firewall.$rid.family="$fam"
     uci set firewall.$rid.proto='tcp'

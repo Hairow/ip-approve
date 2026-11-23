@@ -62,6 +62,10 @@ cn 白名单相关文件在 /etc/cn-ipset/，与本目录无关。
 - 按钮链接域名取自 QUICK_URL；清空 QUICK_URL 或 QUICK_SECRET 自动退回纯文本推送
 - 已处理 IP 再点旧按钮会显示「已于本次推送之前已被批准/拒绝」
 
+## probe-log 规则（新探测源发现）
+
+ip4-probe-log / ip6-probe-log：无集合匹配的兜底 log+reject 规则，排在各 family 审批规则最后。作用：对 3 个审批端口的全新来源写内核日志（前缀 ip4-probe-log: / ip6-probe-log:），watch 监听该日志把源 IP 加入 pending 并推钉钉。拦截动作与 zone 默认拒绝相同，纯粹为发现探测源；不重开 wan zone 全量日志（避免 pending 污染）。
+
 ## fnOS 转发审批组（IPv6）
 
 sync-approve-firewall.sh 会维护一组 forward 规则（随 APPROVE_PORT6 启停）：非 cn 来源经 IPv6 访问 fnOS Web（5666/5667）时由 fnos-ip6-probe-log 记录探测源进 pending（组内命名：fnos-ip6-deny-drop / fnos-ip6-allow-accept / fnos-ip6-pending-reject / fnos-ip6-probe-log），推送钉钉审批；批准后经 ip_allow6 放行。cn 白名单规则 Allow-fnos-Web6 已移除（所有来源统一走审批）。
