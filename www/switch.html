@@ -290,10 +290,18 @@ const REFRESH_MS = 30000;
 const API_URL = '/cgi-bin/luci/admin/switchboard/run';
 const GUESS_KEY = 'sw_guess';
 
-/* state 请求体：带上线 service 项名字，让后端把 rc.list 收窄为定向查询
-   （全量 rc.list {} 要扫所有 init 脚本，3s+；带 name 约 0.16s）。 */
+/* state 请求体：
+   services —— service 项名字，让后端把 rc.list 收窄为定向查询
+               （全量 rc.list {} 要扫所有 init 脚本，3s+；带 name 约 0.16s）。
+   pgrep —— 带进程特征的服务，后端据此判定真实运行态并只回布尔值，
+            前端不再接收 30KB+ 的整份进程表。 */
 function stateBody() {
-  return { action: 'state', services: ITEMS.filter(i => i.type === 'service').map(i => i.name) };
+  const svc = ITEMS.filter(i => i.type === 'service');
+  return {
+    action: 'state',
+    services: svc.map(i => i.name),
+    pgrep: svc.filter(i => i.pgrep).map(i => ({ name: i.name, pattern: i.pgrep })),
+  };
 }
 
 /* ==================== 状态 ==================== */
@@ -768,9 +776,9 @@ async function refresh(prefetched) {
 
   /* 一次 state 请求取回面板全部只读数据；业务判定（降级 / guess / 设备合并）
      仍留在本页，后端只吐原始结构。速率差分已在后端算好。 */
-  const st = prefetched || await api('state', { services: stateBody().services });
+  const st = prefetched || await api('state', stateBody());
   const rcAll = st.rc || {};
-  const procsRaw = { result: st.procs || [] };
+  const procMap = st.proc || {};          /* 后端已按 pgrep 判好运行态：name -> true/false/null */
   const netRaw = { interface: st.net || [] };
   const mountsRaw = { result: st.mounts || [] };
 
@@ -781,8 +789,8 @@ async function refresh(prefetched) {
     ? await Promise.all(svcItems.map(i => queryService(i.name, rcAll)))
     : svcItems.map(() => ({ ok: false, running: null, enabled: null }));
   if (S.rcAvailable && !probes.some(p => p.ok)) S.rcAvailable = false;
-  const procProbes = await Promise.all(
-    svcItems.map(i => i.pgrep ? queryProc(i.pgrep, procsRaw) : Promise.resolve(null)));
+  /* 进程态由后端在 state 里按 pgrep 判好，只回布尔；不再拉整份进程表 */
+  const procProbes = svcItems.map(i => i.pgrep ? (procMap[i.name] ?? null) : null);
   const probeByName = {};
   const procByName = {};
   svcItems.forEach((it, i) => {
@@ -790,8 +798,7 @@ async function refresh(prefetched) {
     procByName[it.name] = procProbes[i];
   });
 
-  /* 端口转发 / 运行状态：均由 state 一并返回 */
-  const fw = st.fw || {};
+  /* 运行状态：board/sysinfo 由 state 一并返回（firewall 配置前端不用，state 不再下发） */
   if (st.board) S.board = st.board;
   S.sysinfo = st.sysinfo || null;
 
@@ -873,17 +880,6 @@ async function refresh(prefetched) {
       S.status[it.name] = {
         on, source, enabled: p.enabled, known: p.ok || proc !== null, section: null,
       };
-    } else {
-      const sec = findRedirect(fw, it.name);
-      if (sec) {
-        const en = sec.enabled;
-        S.status[it.name] = {
-          on: (en === undefined || en === '' || en === '1' || en === 1 || en === true),
-          source: 'rpc', enabled: null, known: true, section: sec['.name'],
-        };
-      } else {
-        S.status[it.name] = { on: false, source: 'none', enabled: null, known: false, section: null };
-      }
     }
   });
   if (window.ipapCountSync) { try { await window.ipapCountSync(); } catch (e){ if (e instanceof SessionError) throw e; } }   /* 审批数量随面板刷新同步 */

@@ -74,6 +74,30 @@ function wan_rate(ifs) {
 	return (dt > 0 && rx >= 0 && tx >= 0) ? { rx: rx / dt, tx: tx / dt } : null;
 }
 
+/* 进程态判定：按前端给出的 pgrep 前缀在 getProcessList 里匹配，只回布尔值，
+   不把整份进程表（30KB+）塞进 state 响应。列表空则回 null 让前端走 guess 降级。
+   pats: [{ name, pattern }, ...]（前端 ITEMS 里带 pgrep 的 service 项）。 */
+function proc_states(pats) {
+	const out = {};
+	const list = type(pats) == 'array' ? pats : [];
+	const all = safe('luci', 'getProcessList', {}, {});
+	const rows = (all && all.result) || [];
+	for (let i = 0; i < length(list); i++) {
+		const e = list[i];
+		if (type(e) != 'object' || e == null) continue;
+		const name = '' + (e.name ?? '');
+		const pat = '' + (e.pattern ?? '');
+		if (!name || !pat) continue;
+		let hit = false;
+		for (let j = 0; j < length(rows); j++) {
+			const cmd = '' + ((rows[j] && rows[j].COMMAND) ?? '');
+			if (substr(cmd, 0, length(pat)) == pat) { hit = true; break; }
+		}
+		out[name] = hit ? true : (length(rows) ? false : null);
+	}
+	return out;
+}
+
 /* 按前端给出的服务名逐个定向查 rc.list。
    全量 rc.list {} 要扫描所有 init 脚本（3s+），带 name 只查单个（~0.16s）。 */
 function rc_service_states(names) {
@@ -89,24 +113,87 @@ function rc_service_states(names) {
 	return out;
 }
 
-/* 一次聚合返回面板全部只读数据；原始结构交给前端做业务判定
-   （rcAvailable 降级、guess 兜底、buildDevices 合并都留在前端）
-   body.services：本页 service 项名字，用来把 rc.list 收窄成定向查询。 */
+/* 通用字段裁剪：只回前端真正读的键，避免把 ubus 原始大结构（进程表/接口详情/
+   租约全字段）透传。实测 state 响应从 ~52KB 降到几 KB。 */
+function pick(o, keys) {
+	const out = {};
+	if (type(o) != 'object' || o == null) return out;
+	for (let i = 0; i < length(keys); i++) {
+		const k = keys[i];
+		if (o[k] != null) out[k] = o[k];
+	}
+	return out;
+}
+function pick_list(arr, keys) {
+	const out = [];
+	if (type(arr) != 'array') return out;
+	for (let i = 0; i < length(arr); i++)
+		out[length(out)] = pick(arr[i], keys);
+	return out;
+}
+/* 网络接口：up/interface/device 直出，route 只留 target（前端判默认路由/后端算速率都要），
+   ipv4/ipv6 地址只留 address（前端据此显示 WAN 地址、剔除本机地址）。 */
+function pick_net(ifs) {
+	const out = [];
+	if (type(ifs) != 'array') return out;
+	for (let i = 0; i < length(ifs); i++) {
+		const it = ifs[i];
+		if (type(it) != 'object' || it == null) continue;
+		out[length(out)] = {
+			up:            it.up,
+			interface:     it.interface,
+			device:        it.device,
+			route:         pick_list(it.route || [], [ 'target' ]),
+			'ipv4-address': pick_list(it['ipv4-address'] || [], [ 'address' ]),
+			'ipv6-address': pick_list(it['ipv6-address'] || [], [ 'address' ]),
+		};
+	}
+	return out;
+}
+/* hints 是以 MAC 为键的对象，逐个值只留 name/ipaddrs/ip6addrs */
+function pick_hints(h) {
+	const out = {};
+	if (type(h) != 'object' || h == null) return out;
+	for (let k in h)
+		out[k] = pick(h[k], [ 'name', 'ipaddrs', 'ip6addrs' ]);
+	return out;
+}
+
+/* 一次聚合返回面板全部只读数据；只回原始结构里前端实际使用的字段，
+   业务判定（rcAvailable 降级、guess 兜底、buildDevices 合并）仍在前端。
+   body.services：service 项名字，把 rc.list 收窄成定向查询。
+   body.pgrep：[{name, pattern}]，后端据此判定进程态，前端不再接收进程表。 */
 function action_state(body) {
+	const b = (body != null && type(body) == 'object') ? body : {};
 	const net = safe('network.interface', 'dump', {}, {});
 	const ifs = net.interface || [];
+	const si = safe('system', 'info', {}, null);
+	const bd = safe('system', 'board', {}, null);
+	const mounts = (safe('luci', 'getMountPoints', {}, {}).result) || [];
+	const leases = safe('luci-rpc', 'getDHCPLeases', {}, null);
+	const hints = safe('luci-rpc', 'getHostHints', {}, null);
+	const sys = (si != null && type(si) == 'object') ? {
+		uptime: si.uptime,
+		load:   si.load,
+		memory: pick(si.memory, [ 'total', 'available', 'free', 'buffered', 'cached' ]),
+	} : null;
+	const le = (leases != null && type(leases) == 'object') ? {
+		dhcp_leases:  pick_list(leases.dhcp_leases || [],
+			[ 'expires', 'macaddr', 'hostname', 'ipaddr' ]),
+		dhcp6_leases: pick_list(leases.dhcp6_leases || [],
+			[ 'expires', 'macaddr', 'duid', 'hostname', 'ip6addrs', 'ip6addr' ]),
+	} : null;
 	json_out({
 		ok: true,
-		rc:      rc_service_states(body && body.services),
-		procs:   (safe('luci', 'getProcessList', {}, {}).result) || [],
-		fw:      (safe('uci', 'get', { config: 'firewall' }, {}).values) || {},
-		sysinfo: safe('system', 'info', {}, null),
-		board:   safe('system', 'board', {}, null),
-		net:     ifs,
-		mounts:  (safe('luci', 'getMountPoints', {}, {}).result) || [],
+		rc:      rc_service_states(b.services),
+		proc:    proc_states(b.pgrep),
+		sysinfo: sys,
+		board:   (bd != null && type(bd) == 'object') ? pick(bd, [ 'model' ]) : null,
+		net:     pick_net(ifs),
+		mounts:  pick_list(mounts, [ 'device', 'mount', 'size', 'free' ]),
 		rate:    wan_rate(ifs),
-		leases:  safe('luci-rpc', 'getDHCPLeases', {}, null),
-		hints:   safe('luci-rpc', 'getHostHints', {}, null),
+		leases:  le,
+		hints:   pick_hints(hints),
 	});
 }
 
