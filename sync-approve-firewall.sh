@@ -1,7 +1,7 @@
 #!/bin/sh
 # 审批防火墙同步脚本：改 /etc/ip-approve/approved.conf 的 4 个端口变量后运行本脚本
 #   INPUT_APPROVE_PORT4/6   外网→路由器本机（input 组，规则 ip4-*/ip6-*）
-#   FORWARD_APPROVE_PORT4/6 外网→lan 转发（forward 组，规则 fnos-ip4-*/fnos-ip6-*）
+#   FORWARD_APPROVE_PORT4/6 外网→lan 转发（forward 组，规则 forward-ip4-*/forward-ip6-*）
 # 每组 4 条规则：deny→drop / allow→accept / pending→reject / probe-log→log+reject（watch 靠它发现新探测源）
 # 端口留空 = 该组停用；缺失的 ipset/规则自动重建；末尾重启防火墙生效
 CONF=/etc/ip-approve/approved.conf
@@ -47,14 +47,14 @@ ip6-pending-reject|ip_pending6|REJECT|ipv6|
 ip6-probe-log||REJECT|ipv6|1'
 
 # forward 审批规则表: name|ipset(可空)|target|family|log(可空)
-FWD_DEF='fnos-ip4-deny-drop|ip_deny|DROP|ipv4|
-fnos-ip4-allow-accept|ip_allow|ACCEPT|ipv4|
-fnos-ip4-pending-reject|ip_pending|REJECT|ipv4|
-fnos-ip4-probe-log||REJECT|ipv4|1
-fnos-ip6-deny-drop|ip_deny6|DROP|ipv6|
-fnos-ip6-allow-accept|ip_allow6|ACCEPT|ipv6|
-fnos-ip6-pending-reject|ip_pending6|REJECT|ipv6|
-fnos-ip6-probe-log||REJECT|ipv6|1'
+FWD_DEF='forward-ip4-deny-drop|ip_deny|DROP|ipv4|
+forward-ip4-allow-accept|ip_allow|ACCEPT|ipv4|
+forward-ip4-pending-reject|ip_pending|REJECT|ipv4|
+forward-ip4-probe-log||REJECT|ipv4|1
+forward-ip6-deny-drop|ip_deny6|DROP|ipv6|
+forward-ip6-allow-accept|ip_allow6|ACCEPT|ipv6|
+forward-ip6-pending-reject|ip_pending6|REJECT|ipv6|
+forward-ip6-probe-log||REJECT|ipv6|1'
 
 have_ipset() {
   for s in $(uci show firewall 2>/dev/null | grep '=ipset' | cut -d. -f2 | cut -d= -f1); do

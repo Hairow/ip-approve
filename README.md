@@ -93,8 +93,8 @@ approved.conf 里 4 个端口变量，各自独立、均可留空（留空 = 该
 |------|------|--------|
 | INPUT_APPROVE_PORT4 | 外网→路由器本机 (v4) | ip4-deny-drop / ip4-allow-accept / ip4-pending-reject / ip4-probe-log |
 | INPUT_APPROVE_PORT6 | 外网→路由器本机 (v6) | ip6-* 同构 4 条 |
-| FORWARD_APPROVE_PORT4 | 外网→lan 转发 (v4) | fnos-ip4-* 同构 4 条 |
-| FORWARD_APPROVE_PORT6 | 外网→lan 转发 (v6，fnOS Web) | fnos-ip6-* 同构 4 条 |
+| FORWARD_APPROVE_PORT4 | 外网→lan 转发 (v4) | forward-ip4-* 同构 4 条 |
+| FORWARD_APPROVE_PORT6 | 外网→lan 转发 (v6，fnOS Web) | forward-ip6-* 同构 4 条 |
 
 每组固定 4 条规则（见「防火墙规则结构」）。改完运行 /etc/ip-approve/sync-approve-firewall.sh（各组分别同步 + 重建缺失的 ipset/规则 + 重启防火墙）。注意 forward 规则只按端口匹配、不限定目标主机，转发端口应只给单一目标服务使用。
 
