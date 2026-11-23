@@ -1,23 +1,9 @@
 #!/bin/sh
-# 审批防火墙同步脚本：input/forward 两组端口独立配置 + 缺失的 ipset/规则自动重建
-# 用法: 先改 /etc/ip-approve/approved.conf 里的 4 个端口变量（均可留空 = 该组停用）：
-#         INPUT_APPROVE_PORT4='端口1 端口2 ...'    ← input(v4) 审批端口：外网→路由器本机
-#         INPUT_APPROVE_PORT6='端口1 端口2 ...'    ← input(v6) 审批端口
-#         FORWARD_APPROVE_PORT4='端口1 ...'        ← forward(v4) 审批端口：外网→lan 转发流量
-#         FORWARD_APPROVE_PORT6='端口1 ...'        ← forward(v6) 审批端口（fnOS Web 等）
-#       再运行本脚本
-# 功能:
-#   1) 6 个 ipset 定义缺失时自动重建（含 loadfile 关联）
-#   2) input 审批规则（src=wan，目标=路由器本机）：ip4-*/ip6-* 各 4 条，随 INPUT_APPROVE_PORT* 启停
-#   3) forward 审批规则（src=wan dest=lan，转发流量）：fnos-ip4-*/fnos-ip6-* 各 4 条，
-#      随 FORWARD_APPROVE_PORT* 启停；注意 forward 规则不限定目标主机，仅按端口匹配——
-#      端口应只给单一目标服务使用（如 fnOS Web 5666/5667）
-# 规则结构（每组 4 条）：deny(set)→drop / allow(set)→accept / pending(set)→reject /
-#   probe-log(无集合,兜底)→log+reject ← watch 靠 probe-log 日志发现新探测源
-# 其他:
-#   - nft 日志前缀 = fw4 取自规则名（如 ip4-probe-log: ），approved-ip-watch.sh 用泛匹配
-#     *pending-reject* / *probe-log* 兜住所有前缀，规则改名无需同步 watch
-#   - 末尾 uci commit 并重启防火墙使全部变更生效；ip_pending 为运行时集合，重启后清空
+# 审批防火墙同步脚本：改 /etc/ip-approve/approved.conf 的 4 个端口变量后运行本脚本
+#   INPUT_APPROVE_PORT4/6   外网→路由器本机（input 组，规则 ip4-*/ip6-*）
+#   FORWARD_APPROVE_PORT4/6 外网→lan 转发（forward 组，规则 fnos-ip4-*/fnos-ip6-*）
+# 每组 4 条规则：deny→drop / allow→accept / pending→reject / probe-log→log+reject（watch 靠它发现新探测源）
+# 端口留空 = 该组停用；缺失的 ipset/规则自动重建；末尾重启防火墙生效
 CONF=/etc/ip-approve/approved.conf
 
 # 解析变量值：去引号/分号，逗号转空格；未配置返回空
