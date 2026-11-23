@@ -39,21 +39,21 @@ ip_pending6|ipv6|待审批ip(v6,运行时)|'
 # input 审批规则表: name|ipset(可空)|target|family|log(可空)
 RULES_DEF='ip4-deny-drop|ip_deny|DROP|ipv4|
 ip4-allow-accept|ip_allow|ACCEPT|ipv4|
-ip4-pending-reject|ip_pending|REJECT|ipv4|1
+ip4-pending-reject|ip_pending|REJECT|ipv4|
 ip4-probe-log||REJECT|ipv4|1
 ip6-deny-drop|ip_deny6|DROP|ipv6|
 ip6-allow-accept|ip_allow6|ACCEPT|ipv6|
-ip6-pending-reject|ip_pending6|REJECT|ipv6|1
+ip6-pending-reject|ip_pending6|REJECT|ipv6|
 ip6-probe-log||REJECT|ipv6|1'
 
 # forward 审批规则表: name|ipset(可空)|target|family|log(可空)
 FWD_DEF='fnos-ip4-deny-drop|ip_deny|DROP|ipv4|
 fnos-ip4-allow-accept|ip_allow|ACCEPT|ipv4|
-fnos-ip4-pending-reject|ip_pending|REJECT|ipv4|1
+fnos-ip4-pending-reject|ip_pending|REJECT|ipv4|
 fnos-ip4-probe-log||REJECT|ipv4|1
 fnos-ip6-deny-drop|ip_deny6|DROP|ipv6|
 fnos-ip6-allow-accept|ip_allow6|ACCEPT|ipv6|
-fnos-ip6-pending-reject|ip_pending6|REJECT|ipv6|1
+fnos-ip6-pending-reject|ip_pending6|REJECT|ipv6|
 fnos-ip6-probe-log||REJECT|ipv6|1'
 
 have_ipset() {

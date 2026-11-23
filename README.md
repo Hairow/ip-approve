@@ -70,12 +70,13 @@ cn 白名单相关文件在 /etc/cn-ipset/，与本目录无关。
 |------|------|------|------|------|
 | 1 | `<前缀>-deny-drop` | 源 ∈ ip_deny 集合 | drop | 已拒绝名单拦截 |
 | 2 | `<前缀>-allow-accept` | 源 ∈ ip_allow 集合 | accept | 已批准名单放行 |
-| 3 | `<前缀>-pending-reject` | 源 ∈ ip_pending 集合 | reject（log） | 审批中的重复探测，静默拒绝（watch 去重，不重复推送） |
+| 3 | `<前缀>-pending-reject` | 源 ∈ ip_pending 集合 | reject | 审批中的重复探测，静默拒绝（watch 去重，不重复推送） |
 | 4 | `<前缀>-probe-log` | 其余来源（无集合匹配） | log + reject | **新探测源发现**：写内核日志（前缀如 `ip4-probe-log: `），watch 抓取 → 进 pending → 推钉钉 |
 
 要点：
 
 - 第 4 条的拦截动作与 zone 默认拒绝相同，纯粹为写日志；不重开 wan zone 全量日志（历史上曾因此产生 pending 污染）
+- **probe-log 是全系统唯一的日志源**：allow/deny/pending 规则均静默（allow/deny 无需记录，pending 的重复探测由 watch 去重，日志无用途）
 - input 组规则只匹配目标=路由器本机（input_wan 链）；forward 组匹配 wan→lan 转发流量（forward_wan 链）
 - 日志前缀由 fw4 取自规则名，watch 用泛匹配 `*pending-reject*` / `*probe-log*` 兜住所有前缀
 - 组随对应端口变量启停：留空 = 整组移除，流量走 zone 默认拒绝且不可审批
