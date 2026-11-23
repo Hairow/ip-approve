@@ -130,7 +130,7 @@ trap cleanup TERM INT
 (
     logread -f | while read -r line; do
         case "$line" in
-            *pending-reject*|*fnos-probe-log*) ;;
+            *pending-reject*|*probe-log*) ;;
             *) continue;;
         esac
         ip=$(printf '%s' "$line" | sed -n 's/.*SRC=\([^ ]*\).*/\1/p')

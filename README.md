@@ -64,7 +64,7 @@ cn 白名单相关文件在 /etc/cn-ipset/，与本目录无关。
 
 ## fnOS 转发审批组（IPv6）
 
-sync-approve-firewall.sh 会维护一组 forward 规则（随 APPROVE_PORT6 启停）：非 cn 来源经 IPv6 访问 fnOS Web（5666/5667）时由 fnos-probe-log6 记录探测源进 pending，推送钉钉审批；批准后经 ip_allow6 放行。cn 白名单规则 Allow-fnos-Web6 已移除（所有来源统一走审批）。
+sync-approve-firewall.sh 会维护一组 forward 规则（随 APPROVE_PORT6 启停）：非 cn 来源经 IPv6 访问 fnOS Web（5666/5667）时由 fnos-ip6-probe-log 记录探测源进 pending（组内命名：fnos-ip6-deny-drop / fnos-ip6-allow-accept / fnos-ip6-pending-reject / fnos-ip6-probe-log），推送钉钉审批；批准后经 ip_allow6 放行。cn 白名单规则 Allow-fnos-Web6 已移除（所有来源统一走审批）。
 
 ## 改端口
 

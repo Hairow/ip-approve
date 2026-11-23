@@ -48,10 +48,10 @@ ip6-pending-reject|ip_pending6|REJECT|ipv6|1'
 
 # fnOS 转发审批组（src=wan dest=lan, family=ipv6, dest_port 固定）: name|ipset(可空)|target|log(可空)
 # 渲染顺序必须在 Allow-fnos-Web6 等 cn 白名单 accept 之后（append 到 uci 末尾自然满足）
-FWD_DEF='fnos-deny-drop6|ip_deny6|DROP|
-fnos-approve-accept6|ip_allow6|ACCEPT|
-fnos-pending-reject6|ip_pending6|REJECT|
-fnos-probe-log6||REJECT|1'
+FWD_DEF='fnos-ip6-deny-drop|ip_deny6|DROP|
+fnos-ip6-allow-accept|ip_allow6|ACCEPT|
+fnos-ip6-pending-reject|ip_pending6|REJECT|
+fnos-ip6-probe-log||REJECT|1'
 FWD_PORT='5666 5667'
 
 have_ipset() {
