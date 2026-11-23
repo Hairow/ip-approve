@@ -99,7 +99,8 @@ function proc_states(pats) {
 }
 
 /* 按前端给出的服务名逐个定向查 rc.list。
-   全量 rc.list {} 要扫描所有 init 脚本（3s+），带 name 只查单个（~0.16s）。 */
+   全量 rc.list {} 要扫描所有 init 脚本（3s+），带 name 只查单个（~0.16s）。
+   只回前端读的 enabled/running（start/stop 优先级前端不用）。 */
 function rc_service_states(names) {
 	const out = {};
 	const list = type(names) == 'array' ? names : [];
@@ -107,8 +108,17 @@ function rc_service_states(names) {
 		const name = '' + (list[i] ?? '');
 		if (!name) continue;
 		const one = safe('rc', 'list', { name: name }, {});
-		if (type(one) == 'object' && one != null && one[name] != null)
-			out[name] = one[name];
+		if (type(one) == 'object' && one != null && one[name] != null) {
+			const entry = one[name];
+			if (type(entry) == 'object' && entry != null) {
+				const e = {};
+				if (entry.enabled != null) e.enabled = entry.enabled;
+				if (entry.running != null) e.running = entry.running;
+				out[name] = e;
+			} else {
+				out[name] = entry;
+			}
+		}
 	}
 	return out;
 }
