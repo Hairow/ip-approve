@@ -70,11 +70,18 @@ ip4-probe-log / ip6-probe-log：无集合匹配的兜底 log+reject 规则，排
 
 sync-approve-firewall.sh 会维护一组 forward 规则（随 APPROVE_PORT6 启停）：非 cn 来源经 IPv6 访问 fnOS Web（5666/5667）时由 fnos-ip6-probe-log 记录探测源进 pending（组内命名：fnos-ip6-deny-drop / fnos-ip6-allow-accept / fnos-ip6-pending-reject / fnos-ip6-probe-log），推送钉钉审批；批准后经 ip_allow6 放行。cn 白名单规则 Allow-fnos-Web6 已移除（所有来源统一走审批）。
 
-## 改端口
+## 端口配置（input / forward 分开管理）
 
-编辑 approved.conf 的 APPROVE_PORT（IPv4 端口，空格分隔）和 APPROVE_PORT6（IPv6 端口，空格分隔），然后运行 /etc/ip-approve/sync-approve-firewall.sh（v4/v6 分别同步 + 重建缺失的 ipset/规则 + 重启防火墙）。
+approved.conf 里 4 个端口变量，各自独立、均可留空（留空 = 该组不创建审批规则，已存在的自动移除，流量走 wan 兜底拒绝）：
 
-端口变量**留空 = 该协议族不创建审批规则**（已存在的会被脚本移除），流量直接落到 wan 兜底拒绝，即该协议族不走审批；恢复配置后再次运行脚本即自动重建。
+| 变量 | 作用 | 规则组 |
+|------|------|--------|
+| INPUT_APPROVE_PORT4 | 外网→路由器本机 (v4) | ip4-deny-drop / ip4-allow-accept / ip4-pending-reject / ip4-probe-log |
+| INPUT_APPROVE_PORT6 | 外网→路由器本机 (v6) | ip6-* 同构 4 条 |
+| FORWARD_APPROVE_PORT4 | 外网→lan 转发 (v4) | fnos-ip4-* 同构 4 条 |
+| FORWARD_APPROVE_PORT6 | 外网→lan 转发 (v6，fnOS Web) | fnos-ip6-* 同构 4 条 |
+
+改完运行 /etc/ip-approve/sync-approve-firewall.sh（各组分别同步 + 重建缺失的 ipset/规则 + 重启防火墙）。注意 forward 规则只按端口匹配、不限定目标主机，转发端口应只给单一目标服务使用。
 
 ## 升级保留
 

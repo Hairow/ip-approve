@@ -6,11 +6,15 @@
 DING_WEBHOOK='https://oapi.dingtalk.com/robot/send?access_token=<hex-token>'
 DING_SECRET='SECxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
 
-# 需要走审批的端口（空格分隔，fw4 会编译为端口集合）
-# 留空 = 该协议族不创建审批规则，流量走 wan 兜底拒绝（不审批）
-APPROVE_PORT='50000 56680 30080'
-# IPv6 规则端口（与 APPROVE_PORT 独立，留空 = v6 审批停用）
-APPROVE_PORT6='56666 56667 30080'
+# ---- input 审批组（外网 -> 路由器本机，规则 ip4-*/ip6-* 各 4 条）----
+# 空格分隔；留空 = 该协议族不创建审批规则，流量走 wan 兜底拒绝（不审批）
+INPUT_APPROVE_PORT4='50000 56680 30080'
+INPUT_APPROVE_PORT6='56666 56667 30080'
+
+# ---- forward 审批组（外网 -> lan 转发流量，规则 fnos-ip4-*/fnos-ip6-* 各 4 条）----
+# 注意：forward 规则只按端口匹配、不限定目标主机，端口应只给单一目标服务使用（如 fnOS Web）
+FORWARD_APPROVE_PORT4=''
+FORWARD_APPROVE_PORT6='5666 5667'
 
 # 钉钉一键审批（留空则推送退回纯文本，无按钮）
 # QUICK_SECRET: 32 位 hex，watch 算签名与 CGI 验签必须一致
