@@ -207,35 +207,50 @@ function pick_mounts(ms) {
 	}
 	return out;
 }
-/* 本机全部接口地址：只回纯地址字符串（v6 去掉 /前缀），前端用它把路由器
-   自己从设备列表里剔除（WAN 地址已由 wan_addrs 算好，不再下发接口结构）。 */
-function local_addresses(ifs) {
-	const out = [];
+/* 本机地址集合（地址 -> true），后端内部用来把路由器自己从邻居表里剔除，
+   不再下发前端。v6 去掉 /前缀，与 hints 里的纯地址对齐。 */
+function local_set(ifs) {
+	const out = {};
 	if (type(ifs) != 'array') return out;
 	for (let i = 0; i < length(ifs); i++) {
 		const it = ifs[i];
 		if (type(it) != 'object' || it == null) continue;
-		const v4 = it['ipv4-address'] || [];
-		const v6 = it['ipv6-address'] || [];
-		for (let j = 0; j < length(v4); j++) {
-			const addr = '' + ((v4[j] && v4[j].address) ?? '');
-			if (addr) out[length(out)] = addr;
-		}
-		for (let j = 0; j < length(v6); j++) {
-			let addr = '' + ((v6[j] && v6[j].address) ?? '');
-			const slash = index(addr, '/');
-			if (slash > 0) addr = substr(addr, 0, slash);
-			if (addr) out[length(out)] = addr;
+		const groups = [ it['ipv4-address'] || [], it['ipv6-address'] || [] ];
+		for (let g = 0; g < length(groups); g++) {
+			const arr = groups[g];
+			for (let j = 0; j < length(arr); j++) {
+				let addr = '' + ((arr[j] && arr[j].address) ?? '');
+				const slash = index(addr, '/');
+				if (slash > 0) addr = substr(addr, 0, slash);
+				if (addr) out[addr] = true;
+			}
 		}
 	}
 	return out;
 }
-/* hints 是以 MAC 为键的对象，逐个值只留 name/ipaddrs/ip6addrs */
-function pick_hints(h) {
+/* 过滤地址数组里的本机地址，返回去前缀的纯地址 */
+function filter_local(addrs, local) {
+	const out = [];
+	if (type(addrs) != 'array') return out;
+	for (let i = 0; i < length(addrs); i++) {
+		let a = '' + (addrs[i] ?? '');
+		const slash = index(a, '/');
+		if (slash > 0) a = substr(a, 0, slash);
+		if (a && !local[a]) out[length(out)] = a;
+	}
+	return out;
+}
+/* hints 是以 MAC 为键的对象，逐个值只留 name/ipaddrs/ip6addrs；
+   ip 列表过滤掉本机地址，路由器自己不再出现在设备列表里。 */
+function pick_hints(h, local) {
 	const out = {};
 	if (type(h) != 'object' || h == null) return out;
-	for (let k in h)
-		out[k] = pick(h[k], [ 'name', 'ipaddrs', 'ip6addrs' ]);
+	for (let k in h) {
+		const e = pick(h[k], [ 'name', 'ipaddrs', 'ip6addrs' ]);
+		if (e.ipaddrs != null) e.ipaddrs = filter_local(e.ipaddrs, local);
+		if (e.ip6addrs != null) e.ip6addrs = filter_local(e.ip6addrs, local);
+		out[k] = e;
+	}
 	return out;
 }
 
@@ -270,11 +285,10 @@ function action_state(body) {
 		sysinfo: sys,
 		board:   (bd != null && type(bd) == 'object') ? pick(bd, [ 'model' ]) : null,
 		net:     wan_addrs(ifs),
-		local:   local_addresses(ifs),
 		mounts:  pick_mounts(mounts),
 		rate:    wan_rate(ifs),
 		leases:  le,
-		hints:   pick_hints(hints),
+		hints:   pick_hints(hints, local_set(ifs)),
 	});
 }
 

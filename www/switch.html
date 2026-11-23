@@ -316,7 +316,6 @@ const S = {
   disk: null,          /* 挂载点列表（系统盘 + 外接盘） [{ mount, label, used, total }] */
   rate: null,          /* getRealtimeStats 差分出的 WAN 速率 { rx, tx }（B/s） */
   devices: null,       /* 设备明细 [{ key, name, mac, v4[], v6[] }] */
-  localAddrs: null,    /* 路由器本机各接口地址，用于把「自己」从设备列表里剔除 */
   cores: 0,            /* CPU 核数：rpcd 没有取核数的接口，内联在 <body data-cores="N"> 里（部署时按目标机器写入） */
 };
 const $ = id => document.getElementById(id);
@@ -689,9 +688,8 @@ function showErr(m) {
 }
 
 /* 把租约与邻居表合并成设备明细：同一设备可能既有 DHCPv6 租约又有 SLAAC 地址，
-   按 MAC 归并（fnOS 这类租约无 MAC 的用 DUID 作身份）；路由器本机接口地址剔除。
-   注意 v6 只保留全局地址，fe80 链路本地与 fd ULA 不计。 */
-function isLocal(ip) { return S.localAddrs && S.localAddrs.has(ip); }
+   按 MAC 归并（fnOS 这类租约无 MAC 的用 DUID 作身份）。
+   本机地址已由后端从 hints 里剔除；注意 v6 只保留全局地址，fe80 链路本地与 fd ULA 不计。 */
 
 /* DUID-LL 格式为 0003 + 0001 + 12 位 MAC，能反解出 MAC；
    DUID-LLT（0001…）、DUID-UUID（0004…）无法反解，只能靠主机名归并 */
@@ -707,7 +705,7 @@ function buildDevices(leases, hints) {
     if (!map.has(key)) map.set(key, { key, name: null, mac: null, v4: [], v6: [] });
     return map.get(key);
   };
-  const put = (arr, ip) => { if (ip && !isLocal(ip) && arr.indexOf(ip) < 0) arr.push(ip); };
+  const put = (arr, ip) => { if (ip && arr.indexOf(ip) < 0) arr.push(ip); };
 
   ((leases && leases.dhcp_leases) || []).forEach(x => {
     if (!(x.expires > 0) || !x.macaddr) return;
@@ -730,10 +728,10 @@ function buildDevices(leases, hints) {
   });
   Object.keys(hints || {}).forEach(mac => {
     const h = hints[mac] || {};
-    const v4s = (h.ipaddrs || []).filter(ip => !isLocal(ip));
+    const v4s = (h.ipaddrs || []);
     const v6s = (h.ip6addrs || [])
-      .filter(a => !/^fe80/i.test(a) && !/^fd/i.test(a) && !isLocal(a));
-    if (!v4s.length && !v6s.length) return;    /* 只有本机地址或空记录：跳过 */
+      .filter(a => !/^fe80/i.test(a) && !/^fd/i.test(a));
+    if (!v4s.length && !v6s.length) return;    /* 空记录：跳过 */
     const d = get(mac.toUpperCase());
     d.mac = d.mac || mac.toUpperCase();
     if (h.name && !d.name) d.name = String(h.name).replace(/\.lan$/, '');
@@ -801,9 +799,8 @@ async function refresh(prefetched) {
   if (st.board) S.board = st.board;
   S.sysinfo = st.sysinfo || null;
 
-  /* WAN 地址由后端算好（v4/v6/dev），本机地址剔除名单由 local 下发 */
+  /* WAN 地址由后端算好（v4/v6/dev）；本机地址已由后端从 hints 里剔除 */
   S.net = st.net || null;
-  S.localAddrs = new Set((st.local || []).map(a => String(a).split('/')[0]));
 
   /* 磁盘：系统盘（/overlay，兜底 /）+ 实体块设备挂载（/data、外接 USB 盘等）。
      跳过虚拟/只读/临时挂载（rom/boot/tmp/dev/mnt tmpfs）；used = size - free */
