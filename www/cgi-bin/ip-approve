@@ -43,11 +43,11 @@ fail_add() {  # $1=ip $2=error
 
 # ---- 动作 ----
 action_list() {
-    local rows="[" first=1 line ip ts
-    while read -r ip ts; do
+    local rows="[" first=1 line ip ts port
+    while read -r ip ts port; do
         [ -n "$ip" ] || continue
         [ $first = 1 ] && first=0 || rows="$rows,"
-        rows="$rows{\"ip\":\"$ip\",\"time\":\"$ts\"}"
+        rows="$rows{\"ip\":\"$ip\",\"time\":\"$ts\",\"port\":\"${port:--}\"}"
     done < "$CN/pending.list"
     rows="$rows]"
     json_out "{\"ok\":true,\"rows\":$rows}"

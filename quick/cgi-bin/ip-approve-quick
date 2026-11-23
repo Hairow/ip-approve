@@ -39,8 +39,8 @@ ipstate() {
 
 awk '{print $1}' /etc/ip-approve/pending.list | grep -qxF "$ip" || {
   case "$(ipstate)" in
-    approved) fail "ℹ️ ${ip} 于本次推送之前已被批准，无需重复操作";;
-    denied)   fail "ℹ️ ${ip} 于本次推送之前已被拒绝，无需重复操作";;
+    approved) fail "ℹ️ ${ip} 已被批准，无需重复操作";;
+    denied)   fail "ℹ️ ${ip} 已被拒绝，无需重复操作";;
     *)        fail "该 IP 已不在待审批队列（可能已被处理）";;
   esac
 }

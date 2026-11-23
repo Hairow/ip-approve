@@ -1,6 +1,6 @@
 #!/bin/sh
 # approved-ip-watch.sh
-# 监听 wan 入站被拒流量(v4/v6)：新源 IP -> ip_pending{,6} + pending.list + 钉钉推送
+# 监听 wan 入站被拒流量(v4/v6)：新源 IP+目标端口 -> ip_pending{,6} + pending.list + 钉钉推送
 # 单实例：pidfile 记录主进程，启动时精确清理旧实例进程树(主进程->子shell->logread)
 # 用法：approved-ip-watch.sh test <IP> | backfill
 
@@ -13,7 +13,7 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 [ -f "$CONF" ] && . "$CONF"
 
 notify() {
-    local ip="$1" now last
+    local ip="$1" port="$2" now last
     [ -n "$DING_WEBHOOK" ] || return 0
     case "$DING_WEBHOOK" in *access_token=) return 0;; esac
     now=$(date +%s)
@@ -29,6 +29,8 @@ notify() {
     fi
     local stamp
     stamp=$(date '+%F %T')
+    local pinfo=""
+    case "$port" in ''|'-') pinfo="" ;; *) pinfo="目标端口 $port · " ;; esac
 
     # 快捷按钮：HMAC 签名链接（30 分钟有效），无 QUICK_SECRET 时退回纯文本
     if [ -n "$QUICK_SECRET" ] && [ -n "$QUICK_URL" ]; then
@@ -40,32 +42,33 @@ notify() {
         uok="$QUICK_URL/cgi-bin/ip-approve-quick?a=approve&ip=$ip&ts=$qts&sign=$sa"
         uno="$QUICK_URL/cgi-bin/ip-approve-quick?a=deny&ip=$ip&ts=$qts&sign=$sd"
         curl -s -m 5 -H 'Content-Type: application/json' \
-            -d '{"msgtype":"actionCard","actionCard":{"title":"【待审批IP】'"$ip"'","text":"#### 【待审批IP】'"$ip"'\n\n于 '"$stamp"' 探测进入待审批队列\n\n> 点下方按钮完成审批，链接 30 分钟内有效","hideAvatar":"0","btnOrientation":"1","btns":[{"title":"✅ 批准","actionURL":"'"$uok"'"},{"title":"🚫 拒绝","actionURL":"'"$uno"'"}]}}' \
+            -d '{"msgtype":"actionCard","actionCard":{"title":"【待审批IP】'"$ip"'","text":"#### 【待审批IP】'"$ip"'\n\n'"$pinfo"'于 '"$stamp"' 探测进入待审批队列\n\n> 点下方按钮完成审批，链接 30 分钟内有效","hideAvatar":"0","btnOrientation":"1","btns":[{"title":"✅ 批准","actionURL":"'"$uok"'"},{"title":"🚫 拒绝","actionURL":"'"$uno"'"}]}}' \
             "$url" >/dev/null
     else
         curl -s -m 5 -H 'Content-Type: application/json' \
-            -d '{"msgtype":"text","text":{"content":"【待审批IP】'"$ip"' 于 '"$stamp"' 探测进入待审批队列，请及时审批"}}' \
+            -d '{"msgtype":"text","text":{"content":"【待审批IP】'"$ip"' '"${pinfo:+($pinfo)}"'于 '"$stamp"' 探测进入待审批队列，请及时审批"}}' \
             "$url" >/dev/null
     fi
 }
 
 
 new_ip() {
-    local ip="$2"
+    local ip="$2" port="$3"
     grep -qF "$ip " "$PENDING" 2>/dev/null && return
     nft add element inet fw4 "$1" "{ $ip }" >/dev/null 2>&1 || return
-    echo "$ip $(date '+%F %T')" >> "$PENDING"
-    notify "$ip"
+    echo "$ip $(date '+%F %T') ${port:--}" >> "$PENDING"
+    notify "$ip" "$port"
 }
 
 by_type() {
-    case "$1" in
+    local ip="$1" port="$2"
+    case "$ip" in
         192.168.*|10.*|127.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|169.254.*|0.0.0.0|255.255.255.255) return;;
         [fF][eE]8*|::1|::) return;;
     esac
-    case "$1" in
-        *:*) new_ip ip_pending6 "$1";;
-        *.*.*.*) new_ip ip_pending "$1";;
+    case "$ip" in
+        *:*) new_ip ip_pending6 "$ip" "$port";;
+        *.*.*.*) new_ip ip_pending "$ip" "$port";;
     esac
 }
 
@@ -99,7 +102,7 @@ backfill() {
     rm -f /tmp/.pending-uniq
 }
 
-if [ "$1" = "test" ]; then by_type "$2"; exit $?; fi
+if [ "$1" = "test" ]; then by_type "$2" "$3"; exit $?; fi
 if [ "$1" = "backfill" ]; then backfill; exit $?; fi
 
 # --- 单实例：清掉 pidfile 记录的旧实例进程树 ---
@@ -134,7 +137,8 @@ trap cleanup TERM INT
             *) continue;;
         esac
         ip=$(printf '%s' "$line" | sed -n 's/.*SRC=\([^ ]*\).*/\1/p')
-        [ -n "$ip" ] && by_type "$ip"
+        port=$(printf '%s' "$line" | sed -n 's/.*DPT=\([0-9]*\).*/\1/p')
+        [ -n "$ip" ] && by_type "$ip" "$port"
     done
 ) &
 LOOP_PID=$!
