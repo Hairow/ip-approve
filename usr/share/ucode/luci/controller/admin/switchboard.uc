@@ -141,6 +141,23 @@ function pick_list(arr, keys) {
 		out[length(out)] = pick(arr[i], keys);
 	return out;
 }
+/* 磁盘只回面板会展示的：系统盘（/overlay 或 /，跳过 overlayfs:/overlay 重复项）
+   + 实体盘 /dev/sdX（sda1/sdb1）。tmpfs/rom/boot 等前端不用，不回。 */
+function pick_mounts(ms) {
+	const out = [];
+	if (type(ms) != 'array') return out;
+	for (let i = 0; i < length(ms); i++) {
+		const m = ms[i];
+		if (type(m) != 'object' || m == null) continue;
+		const mount = '' + (m.mount ?? '');
+		const dev = '' + (m.device ?? '');
+		const is_sys = (mount == '/overlay' || mount == '/') && dev != 'overlayfs:/overlay';
+		const is_disk = substr(dev, 0, 7) == '/dev/sd';
+		if (!is_sys && !is_disk) continue;
+		out[length(out)] = pick(m, [ 'device', 'mount', 'size', 'free' ]);
+	}
+	return out;
+}
 /* 网络接口：up/interface/device 直出，route 只留 target（前端判默认路由/后端算速率都要），
    ipv4/ipv6 地址只留 address（前端据此显示 WAN 地址、剔除本机地址）。 */
 function pick_net(ifs) {
@@ -200,7 +217,7 @@ function action_state(body) {
 		sysinfo: sys,
 		board:   (bd != null && type(bd) == 'object') ? pick(bd, [ 'model' ]) : null,
 		net:     pick_net(ifs),
-		mounts:  pick_list(mounts, [ 'device', 'mount', 'size', 'free' ]),
+		mounts:  pick_mounts(mounts),
 		rate:    wan_rate(ifs),
 		leases:  le,
 		hints:   pick_hints(hints),
