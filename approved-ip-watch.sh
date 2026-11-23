@@ -52,8 +52,18 @@ notify() {
 }
 
 
+# 源 IP 字符集白名单：v4 仅数字与点，v6 仅十六进制与冒号；
+# 拦截日志解析出的异物，避免污染钉钉 JSON 与 nft 命令行
+valid_src() {
+    case "$1" in
+        *:*) echo "$1" | grep -qE '^[0-9a-fA-F:]+$' ;;
+        *)   echo "$1" | grep -qE '^[0-9.]+$' ;;
+    esac
+}
+
 new_ip() {
     local ip="$2" port="$3"
+    valid_src "$ip" || return
     grep -qF "$ip " "$PENDING" 2>/dev/null && return
     nft add element inet fw4 "$1" "{ $ip }" >/dev/null 2>&1 || return
     echo "$ip $(date '+%F %T') ${port:--}" >> "$PENDING"
@@ -66,6 +76,7 @@ by_type() {
         192.168.*|10.*|127.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|169.254.*|0.0.0.0|255.255.255.255) return;;
         [fF][eE]8*|::1|::) return;;
     esac
+    valid_src "$ip" || return
     case "$ip" in
         *:*) new_ip ip_pending6 "$ip" "$port";;
         *.*.*.*) new_ip ip_pending "$ip" "$port";;
@@ -84,6 +95,7 @@ backfill() {
                 192.168.*|10.*|127.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|169.254.*|0.0.0.0) continue;;
                 [fF][eE]8*|::1|::) continue;;
             esac
+            valid_src "$ip" || continue
             case "$ip" in
                 *:*) echo "add element inet fw4 ip_pending6 { $ip }";;
                 *.*.*.*) echo "add element inet fw4 ip_pending { $ip }";;

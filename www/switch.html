@@ -1817,10 +1817,6 @@
         document.getElementById('ipap-batch-no').disabled = dis;
         document.getElementById('ipap-batch-clear').disabled = dis;
       }
-      window.ipapSel = function (cb, ip) {
-        if (cb.checked) selected.add(ip); else selected.delete(ip);
-        ipapBatchUI();
-      };
       window.ipapAll = function (on) {   // 表头复选框：全选/取消当前页
         const start = (page - 1) * PAGE_SIZE;
         filteredRows().slice(start, start + PAGE_SIZE).forEach(r => on ? selected.add(r.ip) : selected.delete(r.ip));
@@ -1874,10 +1870,14 @@
         const allOn = rows.every(r => selected.has(r.ip));
         let html = '<table><tr><th class="ck"><input type="checkbox"' + (allOn ? ' checked' : '') + ' onchange="ipapAll(this.checked)" title="全选当前页"></th><th>IP / 时间</th><th>操作</th></tr>';
         for (const row of rows) {
-          html += '<tr><td class="ck"><input type="checkbox"' + (selected.has(row.ip) ? ' checked' : '') + ' onchange="ipapSel(this,\'' + row.ip + '\')"></td>'
-            + '<td class="ip" style="cursor:pointer" onclick="ipapToggleRow(\'' + row.ip + '\');ipapCopy(\'' + row.ip + '\')" title="点击选中/取消选中，同时复制 IP"><span class="ip">' + row.ip + '</span><span class="t">时间 ' + (row.time || '') + (row.port && row.port !== '-' ? ' 端口 ' + row.port : '') + '</span></td>'
-            + '<td><div class="btns"><button class="ok" onclick="ipapAct(\'approve\',\'' + row.ip + '\')">批准</button>'
-            + '<button class="no" onclick="ipapAct(\'deny\',\'' + row.ip + '\')">拒绝</button></div></td></tr>';
+          const ip = esc(row.ip);
+          const time = esc(row.time || '');
+          const port = (row.port && row.port !== '-') ? esc(row.port) : '';
+          html += '<tr data-ip="' + ip + '">'
+            + '<td class="ck"><input type="checkbox" class="ipap-row-check"' + (selected.has(row.ip) ? ' checked' : '') + '></td>'
+            + '<td class="ip" style="cursor:pointer" title="点击选中/取消选中，同时复制 IP"><span class="ip">' + ip + '</span><span class="t">时间 ' + time + (port ? ' 端口 ' + port : '') + '</span></td>'
+            + '<td><div class="btns"><button class="ok" data-act="approve">批准</button>'
+            + '<button class="no" data-act="deny">拒绝</button></div></td></tr>';
         }
         html += '</table>';
         if (totalPages() > 1) {
@@ -1889,6 +1889,18 @@
         }
         body.innerHTML = html;
         ipapBatchUI();
+        /* 事件委托：IP 经 data-ip 传递，不再内联拼 onclick，避免名单内容注入 HTML/JS */
+        body.querySelectorAll('.ipap-row-check').forEach(c => c.addEventListener('change', () => {
+          const rip = c.closest('tr').dataset.ip;
+          if (c.checked) selected.add(rip); else selected.delete(rip);
+          ipapBatchUI();
+        }));
+        body.querySelectorAll('tr[data-ip] .ip').forEach(el => el.addEventListener('click', () => {
+          const rip = el.closest('tr').dataset.ip;
+          ipapToggleRow(rip); ipapCopy(rip);
+        }));
+        body.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', () =>
+          ipapAct(b.dataset.act, b.closest('tr').dataset.ip)));
       };
 
       window.ipapRefresh = async function () {
@@ -2002,10 +2014,6 @@
         document.getElementById('deny-batch-del').disabled = dis;
         document.getElementById('deny-batch-clear').disabled = dis;
       }
-      window.denySel = function (cb, ip) {
-        if (cb.checked) selected.add(ip); else selected.delete(ip);
-        batchUI();
-      };
       window.denyAll = function (on) {
         const start = (page - 1) * PAGE_SIZE;
         filteredRows().slice(start, start + PAGE_SIZE).forEach(r => on ? selected.add(r.ip) : selected.delete(r.ip));
@@ -2077,10 +2085,12 @@
         let html = '<table><tr><th class="ck"><input type="checkbox"' + (allOn ? ' checked' : '') + ' onchange="denyAll(this.checked)" title="全选当前页"></th><th>IP / 设备</th><th>操作</th></tr>';
         for (const row of rows) {
           const nm = deviceName(row.ip);
-          html += '<tr><td class="ck"><input type="checkbox"' + (selected.has(row.ip) ? ' checked' : '') + ' onchange="denySel(this,\'' + row.ip + '\')"></td>'
-            + '<td class="ip" style="cursor:pointer" onclick="denyToggleRow(\'' + row.ip + '\');denyCopy(\'' + row.ip + '\')" title="点击选中/取消选中，同时复制 IP"><span class="ip">' + (row.ip || '') + '</span><span class="t">'
+          const ip = esc(row.ip || '');
+          html += '<tr data-ip="' + ip + '">'
+            + '<td class="ck"><input type="checkbox" class="deny-row-check"' + (selected.has(row.ip) ? ' checked' : '') + '></td>'
+            + '<td class="ip" style="cursor:pointer" title="点击选中/取消选中，同时复制 IP"><span class="ip">' + ip + '</span><span class="t">'
             + (row.family === 'v6' ? 'v6' : 'v4') + (nm ? ' · ' + esc(nm) : '') + '</span></td>'
-            + '<td><div class="btns"><button class="no" onclick="denyUnban(\'' + row.ip + '\')">移除黑名单</button></div></td></tr>';
+            + '<td><div class="btns"><button class="no" data-act="unban">移除黑名单</button></div></td></tr>';
         }
         html += '</table>';
         if (totalPages() > 1) {
@@ -2092,6 +2102,18 @@
         }
         body.innerHTML = html;
         batchUI();
+        /* 事件委托：IP 经 data-ip 传递，不再内联拼 onclick，避免名单内容注入 HTML/JS */
+        body.querySelectorAll('.deny-row-check').forEach(c => c.addEventListener('change', () => {
+          const rip = c.closest('tr').dataset.ip;
+          if (c.checked) selected.add(rip); else selected.delete(rip);
+          batchUI();
+        }));
+        body.querySelectorAll('tr[data-ip] .ip').forEach(el => el.addEventListener('click', () => {
+          const rip = el.closest('tr').dataset.ip;
+          denyToggleRow(rip); denyCopy(rip);
+        }));
+        body.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', () =>
+          denyUnban(b.closest('tr').dataset.ip)));
       };
 
       async function refreshList() {

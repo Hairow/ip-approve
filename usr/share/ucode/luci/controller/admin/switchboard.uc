@@ -22,6 +22,12 @@ function json_out(o) {
 }
 function json_err(msg) { json_out({ ok: false, error: msg }); }
 
+function method_not_allowed() {
+	http.status(405, 'Method Not Allowed');
+	http.header('Allow', 'POST');
+	json_out({ ok: false, error: 'method-not-allowed' });
+}
+
 /* 参数：优先 POST JSON body，GET/非 JSON 回退到 formvalue */
 function param(body, key, def) {
 	if (type(body) == 'object' && body != null && body[key] != null)
@@ -278,6 +284,11 @@ function svc_exec(act) {
 		+ 'umask 022; ' + SERVICE_INIT + ' ' + act + ' >/dev/null 2>&1');
 }
 function action_service(body) {
+	/* 服务启停是写动作，仅允许 POST */
+	if ((http.getenv('REQUEST_METHOD') ?? 'GET') != 'POST') {
+		method_not_allowed();
+		return;
+	}
 	const action = '' + (param(body, 'act', '') ?? '');
 	if (action != 'start' && action != 'stop' && action != 'restart') {
 		json_err('bad service action');
@@ -304,6 +315,11 @@ function action_call(body) {
 	const o = '' + (param(body, 'o', '') ?? '');
 	const m = '' + (param(body, 'm', '') ?? '');
 	if (!allowed(o, m)) { json_err('not allowed: ' + o + '/' + m); return; }
+	/* 写类 ubus 调用（uci set/apply、rc init）仅允许 POST；只读方法可走 GET */
+	const method = http.getenv('REQUEST_METHOD') ?? 'GET';
+	const write_call = (o == 'uci' && (m == 'set' || m == 'apply'))
+		|| (o == 'rc' && m == 'init');
+	if (write_call && method != 'POST') { method_not_allowed(); return; }
 	let p = param(body, 'p', {});
 	if (type(p) == 'string') {
 		try { p = json(p); } catch (e) { p = {}; }

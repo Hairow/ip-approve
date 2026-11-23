@@ -1,6 +1,6 @@
 // IP 审批接口 — 挂在 admin 下由 LuCI dispatcher 自动会话鉴权
-// POST /cgi-bin/luci/admin/ipapprove/run {"action":"approve|deny","ips":[...]} （批量）
-// GET  ?action=list|approve|deny&ip=<addr> （兼容）
+// POST /cgi-bin/luci/admin/ipapprove/run {"action":"approve|deny|unban","ips":[...]} （批量，写动作仅 POST）
+// GET  ?action=list|denylist （只读）
 
 'use strict';
 
@@ -16,6 +16,13 @@ function shell_quote(s) {
 function json_err(msg) {
 	http.prepare_content('application/json; charset=UTF-8');
 	http.write_json({ ok: false, error: msg });
+}
+
+function method_not_allowed() {
+	http.status(405, 'Method Not Allowed');
+	http.header('Allow', 'POST');
+	http.prepare_content('application/json; charset=UTF-8');
+	http.write_json({ ok: false, error: 'method-not-allowed' });
 }
 
 return {
@@ -48,6 +55,13 @@ return {
 		if (action != 'list' && action != 'denylist' && action != 'approve'
 		    && action != 'deny' && action != 'unban') {
 			json_err('bad action');
+			return;
+		}
+		/* 写动作仅允许 POST；list/denylist 只读可走 GET */
+		const method = http.getenv('REQUEST_METHOD') ?? 'GET';
+		if ((action == 'approve' || action == 'deny' || action == 'unban')
+		    && method != 'POST') {
+			method_not_allowed();
 			return;
 		}
 		if (action != 'list' && action != 'denylist' && length(ips) == 0) {

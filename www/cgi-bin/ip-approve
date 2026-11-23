@@ -15,6 +15,12 @@ json_out() {
 
 fail() { json_out "{\"ok\":false,\"error\":\"$1\"}"; exit 0; }
 
+# 写动作仅限 POST：GET 触发返回 405，避免跨站简单请求 CSRF
+method_not_allowed() {
+    printf 'Status: 405 Method Not Allowed\r\nContent-Type: application/json\r\nAllow: POST\r\nCache-Control: no-store\r\n\r\n{"ok":false,"error":"method-not-allowed"}'
+    exit 0
+}
+
 # ---- 鉴权（HTTP 模式才走）----
 check_auth() {
     local sid out
@@ -240,6 +246,12 @@ else
     check_auth || fail "unauthorized"
     ACTION=$(printf '%s' "$QUERY_STRING" | sed -n 's/.*action=\([a-z]*\).*/\1/p')
     IP=$(printf '%s' "$QUERY_STRING" | sed -n 's/.*[?&]ip=\([0-9a-fA-F:.]*\).*/\1/p')
+    # list/denylist 为只读可走 GET；approve/deny/unban 为写动作，仅允许 POST
+    case "$ACTION" in
+        approve|deny|unban)
+            [ "$REQUEST_METHOD" = "POST" ] || method_not_allowed
+            ;;
+    esac
 fi
 
 case "$ACTION" in
