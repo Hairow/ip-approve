@@ -1,6 +1,6 @@
 # /etc/ip-approve — IP 审批防火墙体系
 
-对配置端口（APPROVE_PORT / APPROVE_PORT6，见 approved.conf，当前含 50000/56680/30080 与 56666/56667/30080）做「先探测进 pending → 钉钉推送 → 手机一键批准/拒绝」的动态放行体系。
+对 4 组审批端口（见 approved.conf 的 INPUT_APPROVE_PORT4/6、FORWARD_APPROVE_PORT4/6）做「先探测进 pending → 钉钉推送 → 手机一键批准/拒绝」的动态放行体系。**每种情况（input/forward × v4/v6）固定 4 条防火墙规则**，见下文「防火墙规则结构」。
 
 ## 前置条件
 
@@ -22,12 +22,12 @@
 
 | 文件/目录 | 作用 |
 |-----------|------|
-| approved.conf | 配置：钉钉 webhook/加签密钥、APPROVE_PORT、QUICK_SECRET、QUICK_URL |
+| approved.conf | 配置：钉钉 webhook/加签密钥、4 个端口变量（INPUT/FORWARD_APPROVE_PORT4/6）、QUICK_SECRET、QUICK_URL |
 | pending.list | 待审批 IP 队列（IP + 时间） |
 | ip-allow.list / ip-allow6.list | 批准名单（写入 nft ip_allow / ip_allow6） |
 | ip-deny.list / ip-deny6.list | 拒绝名单（写入 nft ip_deny / ip_deny6） |
 | approved-ip-watch.sh | 监听服务本体：解析探测日志 → nft pending 集合 + pending.list → 推钉钉 |
-| sync-approve-firewall.sh | 同步/重建防火墙：端口集合同步 + 缺失 ipset/规则自动重建（改 APPROVE_PORT 后运行） |
+| sync-approve-firewall.sh | 同步/重建防火墙：各组端口同步 + 缺失 ipset/规则自动重建（改端口变量后运行） |
 | quick/cgi-bin/ip-approve-quick | 钉钉按钮的免登录签名 CGI（HMAC + 30 分钟时效 + pending 校验） |
 | README.md | 本文件 |
 
@@ -52,7 +52,7 @@ cn 白名单相关文件在 /etc/cn-ipset/，与本目录无关。
 ## 钉钉推送链路
 
 ```
-探测 4 端口 → approved-ip-watch 写 pending + 推 actionCard（IP+时间+批准/拒绝按钮）
+探测审批端口 → approved-ip-watch 写 pending + 推 actionCard（IP+时间+批准/拒绝按钮）
 → 公网 https://istoreos.tailaf168e.ts.net (Tailscale Funnel 443)
 → 127.0.0.1:50080 (uhttpd -f，procd 管理)
 → quick/cgi-bin/ip-approve-quick 验签 → 执行 → 即时生效
@@ -62,13 +62,27 @@ cn 白名单相关文件在 /etc/cn-ipset/，与本目录无关。
 - 按钮链接域名取自 QUICK_URL；清空 QUICK_URL 或 QUICK_SECRET 自动退回纯文本推送
 - 已处理 IP 再点旧按钮会显示「已于本次推送之前已被批准/拒绝」
 
-## probe-log 规则（新探测源发现）
+## 防火墙规则结构（每组固定 4 条）
 
-ip4-probe-log / ip6-probe-log：无集合匹配的兜底 log+reject 规则，排在各 family 审批规则最后。作用：对 3 个审批端口的全新来源写内核日志（前缀 ip4-probe-log: / ip6-probe-log:），watch 监听该日志把源 IP 加入 pending 并推钉钉。拦截动作与 zone 默认拒绝相同，纯粹为发现探测源；不重开 wan zone 全量日志（避免 pending 污染）。
+4 组规则（input v4 / input v6 / forward v4 / forward v6）结构完全同构，每条只差名字前缀（ip4- / ip6- / fnos-ip4- / fnos-ip6-）和引用的 ipset（v4 组用 ip_allow/ip_deny/ip_pending，v6 组用 *6 后缀）。nft 链内顺序固定：
 
-## fnOS 转发审批组（IPv6）
+| 顺序 | 规则 | 匹配 | 动作 | 作用 |
+|------|------|------|------|------|
+| 1 | `<前缀>-deny-drop` | 源 ∈ ip_deny 集合 | drop | 已拒绝名单拦截 |
+| 2 | `<前缀>-allow-accept` | 源 ∈ ip_allow 集合 | accept | 已批准名单放行 |
+| 3 | `<前缀>-pending-reject` | 源 ∈ ip_pending 集合 | reject（log） | 审批中的重复探测，静默拒绝（watch 去重，不重复推送） |
+| 4 | `<前缀>-probe-log` | 其余来源（无集合匹配） | log + reject | **新探测源发现**：写内核日志（前缀如 `ip4-probe-log: `），watch 抓取 → 进 pending → 推钉钉 |
 
-sync-approve-firewall.sh 会维护一组 forward 规则（随 APPROVE_PORT6 启停）：非 cn 来源经 IPv6 访问 fnOS Web（5666/5667）时由 fnos-ip6-probe-log 记录探测源进 pending（组内命名：fnos-ip6-deny-drop / fnos-ip6-allow-accept / fnos-ip6-pending-reject / fnos-ip6-probe-log），推送钉钉审批；批准后经 ip_allow6 放行。cn 白名单规则 Allow-fnos-Web6 已移除（所有来源统一走审批）。
+要点：
+
+- 第 4 条的拦截动作与 zone 默认拒绝相同，纯粹为写日志；不重开 wan zone 全量日志（历史上曾因此产生 pending 污染）
+- input 组规则只匹配目标=路由器本机（input_wan 链）；forward 组匹配 wan→lan 转发流量（forward_wan 链）
+- 日志前缀由 fw4 取自规则名，watch 用泛匹配 `*pending-reject*` / `*probe-log*` 兜住所有前缀
+- 组随对应端口变量启停：留空 = 整组移除，流量走 zone 默认拒绝且不可审批
+
+## fnOS 转发审批组
+
+fnOS Web（5666/5667）是 forward 组的当前使用者，随 FORWARD_APPROVE_PORT6 启停；cn 白名单规则 Allow-fnos-Web6 已移除（所有来源统一走审批）。批准后来源进入 ip_allow6，后续访问由第 2 条规则直接放行。
 
 ## 端口配置（input / forward 分开管理）
 
@@ -81,7 +95,7 @@ approved.conf 里 4 个端口变量，各自独立、均可留空（留空 = 该
 | FORWARD_APPROVE_PORT4 | 外网→lan 转发 (v4) | fnos-ip4-* 同构 4 条 |
 | FORWARD_APPROVE_PORT6 | 外网→lan 转发 (v6，fnOS Web) | fnos-ip6-* 同构 4 条 |
 
-改完运行 /etc/ip-approve/sync-approve-firewall.sh（各组分别同步 + 重建缺失的 ipset/规则 + 重启防火墙）。注意 forward 规则只按端口匹配、不限定目标主机，转发端口应只给单一目标服务使用。
+每组固定 4 条规则（见「防火墙规则结构」）。改完运行 /etc/ip-approve/sync-approve-firewall.sh（各组分别同步 + 重建缺失的 ipset/规则 + 重启防火墙）。注意 forward 规则只按端口匹配、不限定目标主机，转发端口应只给单一目标服务使用。
 
 ## 升级保留
 
