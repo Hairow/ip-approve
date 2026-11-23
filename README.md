@@ -64,7 +64,7 @@ cn 白名单相关文件在 /etc/cn-ipset/，与本目录无关。
 
 ## 防火墙规则结构（每组固定 4 条）
 
-4 组规则（input v4 / input v6 / forward v4 / forward v6）结构完全同构，每条只差名字前缀（ip4- / ip6- / fnos-ip4- / fnos-ip6-）和引用的 ipset（v4 组用 ip_allow/ip_deny/ip_pending，v6 组用 *6 后缀）。nft 链内顺序固定：
+4 组规则（input v4 / input v6 / forward v4 / forward v6）结构完全同构，每条只差名字前缀（ip4- / ip6- / forward-ip4- / forward-ip6-）和引用的 ipset（v4 组用 ip_allow/ip_deny/ip_pending，v6 组用 *6 后缀）。nft 链内顺序固定：
 
 | 顺序 | 规则 | 匹配 | 动作 | 作用 |
 |------|------|------|------|------|
