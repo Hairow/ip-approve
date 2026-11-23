@@ -779,7 +779,6 @@ async function refresh(prefetched) {
   const st = prefetched || await api('state', stateBody());
   const rcAll = st.rc || {};
   const procMap = st.proc || {};          /* 后端已按 pgrep 判好运行态：name -> true/false/null */
-  const netRaw = { interface: st.net || [] };
   const mountsRaw = { result: st.mounts || [] };
 
   /* 服务：rc.list（enabled 只读；running 仅有 procd 脚本才有），
@@ -802,30 +801,9 @@ async function refresh(prefetched) {
   if (st.board) S.board = st.board;
   S.sysinfo = st.sysinfo || null;
 
-  /* WAN 地址：network.interface dump（授权内，LuCI 状态页同款）。
-     IPv4 取默认路由（0.0.0.0）所在接口；IPv6 取全局单播地址（2/3 开头，
-     排除 fe80 链路本地与 fd ULA），优先 wan_6 这类带默认 v6 路由的接口 */
-  {
-    const r = netRaw;
-    const ifs = (r && r.interface) || [];
-    const up = ifs.filter(i => i.up);
-    const v4if = up.find(i => (i.route || []).some(x => x.target === '0.0.0.0'))
-      || up.find(i => /^wan/.test(i.interface));
-    const v4 = v4if && v4if['ipv4-address'] && v4if['ipv4-address'][0];
-    let v6 = null;
-    for (const i of up.sort((a, b) =>
-        (b.route || []).some(x => x.target === '::') - (a.route || []).some(x => x.target === '::'))) {
-      const g = (i['ipv6-address'] || []).find(a => /^[23]/.test(a.address));
-      if (g) { v6 = g; break; }
-    }
-    S.net = {
-      v4: v4 ? v4.address : null,
-      v6: v6 ? v6.address : null,
-      dev: v4if ? v4if.device : null,
-    };
-    /* 本机地址剔除名单：后端单独下发（net 只留 wan/wan_6，LAN/tailscale 地址在这） */
-    S.localAddrs = new Set((st.local || []).map(a => String(a).split('/')[0]));
-  }
+  /* WAN 地址由后端算好（v4/v6/dev），本机地址剔除名单由 local 下发 */
+  S.net = st.net || null;
+  S.localAddrs = new Set((st.local || []).map(a => String(a).split('/')[0]));
 
   /* 磁盘：系统盘（/overlay，兜底 /）+ 实体块设备挂载（/data、外接 USB 盘等）。
      跳过虚拟/只读/临时挂载（rom/boot/tmp/dev/mnt tmpfs）；used = size - free */

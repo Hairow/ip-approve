@@ -74,6 +74,55 @@ function wan_rate(ifs) {
 	return (dt > 0 && rx >= 0 && tx >= 0) ? { rx: rx / dt, tx: tx / dt } : null;
 }
 
+/* WAN 地址：直接算好 v4/v6/dev 三个值下发，前端不再收接口结构、不再自己解析。
+   与 wan_rate() 同口径：默认路由所在接口；v6 取 2/3 开头的全局单播地址。 */
+function wan_addrs(ifs) {
+	let v4if = null, v6if = null;
+	for (let i = 0; i < length(ifs); i++) {
+		const it = ifs[i];
+		if (!it.up) continue;
+		const routes = it.route || [];
+		for (let j = 0; j < length(routes); j++) {
+			const target = '' + (routes[j].target ?? '');
+			if (target == '0.0.0.0' && !v4if) v4if = it;
+			if (target == '::' && !v6if) v6if = it;
+		}
+	}
+	if (!v4if) { /* 兜底：无默认 v4 路由但有 wan 接口 */
+		for (let i = 0; i < length(ifs); i++) {
+			const it = ifs[i];
+			if (it.up && substr('' + (it.interface ?? ''), 0, 3) == 'wan') { v4if = it; break; }
+		}
+	}
+	const v4a = v4if ? (v4if['ipv4-address'] || []) : [];
+	const v4 = (length(v4a) > 0 && v4a[0] && v4a[0].address != null)
+		? '' + v4a[0].address : null;
+	const v6name = v6if ? ('' + (v6if.interface ?? '')) : '';
+	let v6 = null;
+	/* 先扫带 :: 默认路由的接口，再扫其余 up 接口兜底 */
+	for (let pass = 0; pass < 2 && !v6; pass++) {
+		for (let i = 0; i < length(ifs); i++) {
+			const it = ifs[i];
+			if (!it.up) continue;
+			const name = '' + (it.interface ?? '');
+			if (pass == 0 && name != v6name) continue;
+			if (pass == 1 && name == v6name) continue;
+			const a = it['ipv6-address'] || [];
+			for (let j = 0; j < length(a); j++) {
+				const addr = '' + ((a[j] && a[j].address) ?? '');
+				const c = substr(addr, 0, 1);
+				if (c == '2' || c == '3') { v6 = addr; break; }
+			}
+			if (v6) break;
+		}
+	}
+	return {
+		v4: v4,
+		v6: v6,
+		dev: v4if ? ('' + (v4if.device ?? '')) : null,
+	};
+}
+
 /* 进程态判定：按前端给出的 pgrep 前缀在 getProcessList 里匹配，只回布尔值，
    不把整份进程表（30KB+）塞进 state 响应。列表空则回 null 让前端走 guess 降级。
    pats: [{ name, pattern }, ...]（前端 ITEMS 里带 pgrep 的 service 项）。 */
@@ -158,30 +207,8 @@ function pick_mounts(ms) {
 	}
 	return out;
 }
-/* 网络接口：面板只显示 WAN 地址，只下发 wan / wan_6 两个接口。
-   up/interface/device 直出，route 只留 target，ipv4/ipv6 地址只留 address。
-   LAN/loopback/tailscale 不再下发；本机地址剔除改用下面的 local_addresses()。 */
-function pick_net(ifs) {
-	const out = [];
-	if (type(ifs) != 'array') return out;
-	for (let i = 0; i < length(ifs); i++) {
-		const it = ifs[i];
-		if (type(it) != 'object' || it == null) continue;
-		const name = '' + (it.interface ?? '');
-		if (name != 'wan' && name != 'wan_6') continue;
-		out[length(out)] = {
-			up:            it.up,
-			interface:     it.interface,
-			device:        it.device,
-			route:         pick_list(it.route || [], [ 'target' ]),
-			'ipv4-address': pick_list(it['ipv4-address'] || [], [ 'address' ]),
-			'ipv6-address': pick_list(it['ipv6-address'] || [], [ 'address' ]),
-		};
-	}
-	return out;
-}
 /* 本机全部接口地址：只回纯地址字符串（v6 去掉 /前缀），前端用它把路由器
-   自己从设备列表里剔除。net 只留 wan/wan_6 后，LAN/tailscale 地址靠这个字段。 */
+   自己从设备列表里剔除（WAN 地址已由 wan_addrs 算好，不再下发接口结构）。 */
 function local_addresses(ifs) {
 	const out = [];
 	if (type(ifs) != 'array') return out;
@@ -242,7 +269,7 @@ function action_state(body) {
 		proc:    proc_states(b.pgrep),
 		sysinfo: sys,
 		board:   (bd != null && type(bd) == 'object') ? pick(bd, [ 'model' ]) : null,
-		net:     pick_net(ifs),
+		net:     wan_addrs(ifs),
 		local:   local_addresses(ifs),
 		mounts:  pick_mounts(mounts),
 		rate:    wan_rate(ifs),
