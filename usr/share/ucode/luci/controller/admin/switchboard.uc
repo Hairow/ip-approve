@@ -158,14 +158,17 @@ function pick_mounts(ms) {
 	}
 	return out;
 }
-/* 网络接口：up/interface/device 直出，route 只留 target（前端判默认路由/后端算速率都要），
-   ipv4/ipv6 地址只留 address（前端据此显示 WAN 地址、剔除本机地址）。 */
+/* 网络接口：面板只显示 WAN 地址，只下发 wan / wan_6 两个接口。
+   up/interface/device 直出，route 只留 target，ipv4/ipv6 地址只留 address。
+   LAN/loopback/tailscale 不再下发；本机地址剔除改用下面的 local_addresses()。 */
 function pick_net(ifs) {
 	const out = [];
 	if (type(ifs) != 'array') return out;
 	for (let i = 0; i < length(ifs); i++) {
 		const it = ifs[i];
 		if (type(it) != 'object' || it == null) continue;
+		const name = '' + (it.interface ?? '');
+		if (name != 'wan' && name != 'wan_6') continue;
 		out[length(out)] = {
 			up:            it.up,
 			interface:     it.interface,
@@ -174,6 +177,29 @@ function pick_net(ifs) {
 			'ipv4-address': pick_list(it['ipv4-address'] || [], [ 'address' ]),
 			'ipv6-address': pick_list(it['ipv6-address'] || [], [ 'address' ]),
 		};
+	}
+	return out;
+}
+/* 本机全部接口地址：只回纯地址字符串（v6 去掉 /前缀），前端用它把路由器
+   自己从设备列表里剔除。net 只留 wan/wan_6 后，LAN/tailscale 地址靠这个字段。 */
+function local_addresses(ifs) {
+	const out = [];
+	if (type(ifs) != 'array') return out;
+	for (let i = 0; i < length(ifs); i++) {
+		const it = ifs[i];
+		if (type(it) != 'object' || it == null) continue;
+		const v4 = it['ipv4-address'] || [];
+		const v6 = it['ipv6-address'] || [];
+		for (let j = 0; j < length(v4); j++) {
+			const addr = '' + ((v4[j] && v4[j].address) ?? '');
+			if (addr) out[length(out)] = addr;
+		}
+		for (let j = 0; j < length(v6); j++) {
+			let addr = '' + ((v6[j] && v6[j].address) ?? '');
+			const slash = index(addr, '/');
+			if (slash > 0) addr = substr(addr, 0, slash);
+			if (addr) out[length(out)] = addr;
+		}
 	}
 	return out;
 }
@@ -217,6 +243,7 @@ function action_state(body) {
 		sysinfo: sys,
 		board:   (bd != null && type(bd) == 'object') ? pick(bd, [ 'model' ]) : null,
 		net:     pick_net(ifs),
+		local:   local_addresses(ifs),
 		mounts:  pick_mounts(mounts),
 		rate:    wan_rate(ifs),
 		leases:  le,

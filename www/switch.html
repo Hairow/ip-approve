@@ -823,13 +823,8 @@ async function refresh(prefetched) {
       v6: v6 ? v6.address : null,
       dev: v4if ? v4if.device : null,
     };
-    /* 收集本机所有接口地址（含 LAN），设备列表里要把路由器自己剔除 */
-    const local = new Set();
-    ifs.forEach(i => {
-      (i['ipv4-address'] || []).forEach(a => local.add(a.address));
-      (i['ipv6-address'] || []).forEach(a => local.add(String(a.address).split('/')[0]));
-    });
-    S.localAddrs = local;
+    /* 本机地址剔除名单：后端单独下发（net 只留 wan/wan_6，LAN/tailscale 地址在这） */
+    S.localAddrs = new Set((st.local || []).map(a => String(a).split('/')[0]));
   }
 
   /* 磁盘：系统盘（/overlay，兜底 /）+ 实体块设备挂载（/data、外接 USB 盘等）。
