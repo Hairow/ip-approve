@@ -258,28 +258,45 @@ function action_state(body) {
 /* 服务启停：不用 rpcd 的 rc.init / luci.setInitAction（umask 0077 + 同步
    阻塞事件循环 → passwall 的 lua helper 调 ubus 死锁、配置生成假启动），
    改在本控制器所在的 uhttpd CGI 进程（umask 0022）里用 system() 直接执行。
-   等价于原自建 /etc/init.d/pswctl 包装：关继承 fd + umask 022 + start 智能映射
-   （核心进程在跑就 restart，跳过空转 stop 省 ~2s），但不再需要那个脚本文件。
+   一次请求内同步做完：在跑则 start 映射 restart → 执行 → 探活 → 失败补一次
+   restart → 回最终 running；前端因此不再需要忙等轮询。
    action 白名单 start/stop/restart，name 固定 passwall，杜绝命令注入。 */
 const SERVICE_INIT = '/etc/init.d/passwall';
-const SERVICE_PGREP = '/tmp/etc/passwall/bin/';
+/* 核心进程前缀拆两段在 shell 里拼：若把完整字面量写进 system() 命令行，
+   pgrep -f 会匹配到 sh -c 包装自身（其命令行含该字符串）而恒判"在跑"。
+   system() 返回退出码：0=匹配到，非0=没匹配到。 */
+function svc_alive() {
+	return system('P="/tmp/etc/passwall/b"; P="${P}in/"; '
+		+ 'pgrep -f "$P" >/dev/null 2>&1') == 0;
+}
+/* 同步执行 init：system() 等到脚本跑完才返回，天然避开"上一轮 stop 的
+   kill -9 还没收尾就 restart、打断 gen_config 产出 0 字节 json → xray EOF
+   假启动"的竞态。关 >2 的继承 fd + umask 022 沿用原 pswctl 包装的做法。 */
+function svc_exec(act) {
+	system('for f in /proc/self/fd/*; do n=${f##*/}; '
+		+ '[ "$n" -gt 2 ] 2>/dev/null && eval "exec $n<&-" 2>/dev/null; done; '
+		+ 'umask 022; ' + SERVICE_INIT + ' ' + act + ' >/dev/null 2>&1');
+}
 function action_service(body) {
 	const action = '' + (param(body, 'act', '') ?? '');
 	if (action != 'start' && action != 'stop' && action != 'restart') {
 		json_err('bad service action');
 		return;
 	}
-	/* start：已在跑就 restart（等价 pswctl），否则 start */
+	/* start：已在跑就 restart（跳过空转 stop 省 ~2s），否则 start */
 	let act = action;
 	if (action == 'start')
-		act = system('pgrep -f ' + SERVICE_PGREP + ' >/dev/null 2>&1')
-			? 'restart' : 'start';
-	/* 关 >2 的继承 fd、umask 022，再后台执行，避免阻塞本 CGI 请求 */
-	const cmd = 'for f in /proc/self/fd/*; do n=${f##*/}; '
-		+ '[ "$n" -gt 2 ] 2>/dev/null && eval "exec $n<&-" 2>/dev/null; done; '
-		+ 'umask 022; ' + SERVICE_INIT + ' ' + act + ' >/dev/null 2>&1 &';
-	system(cmd);
-	json_out({ ok: true, action: act });
+		act = svc_alive() ? 'restart' : 'start';
+	svc_exec(act);
+	system('sleep 1');   /* 给核心进程拉起留一点时间 */
+	let running = svc_alive();
+	/* 开启后核心进程没起来（偶发 gen 被打断）：补一次 restart */
+	if (act != 'stop' && !running) {
+		svc_exec('restart');
+		system('sleep 1');
+		running = svc_alive();
+	}
+	json_out({ ok: true, action: act, running: running });
 }
 
 /* 单条 ubus 调用代理：供开关操作时的 uci set/apply、rc.init、进程轮询使用 */

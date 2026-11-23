@@ -863,38 +863,18 @@
      * 但继承 rpcd umask 0077，生成文件 0600 低权限进程读不了。
      * firewall reload 不涉及上述坑，仍走 rc.init。
      * action 只可能是 start / stop / restart / reload，绝无 enable / disable。
+     * 后端一次请求内同步做完启停 + 探活 + 失败补 restart，回最终 running，
+     * 前端不再拉进程表忙等。
      */
     async function serviceAction(act) {
-      await api('service', { act });
-    }
-
-    /* rpcd 的 setInitAction / rc.init 是异步派发：调用返回时 init 脚本可能还在后台跑。
-       passwall 的 app.sh stop 会把命令行含 "passwall/" 的进程 kill -9（lua gen_config
-       不在其排除名单），若上一次 stop 未收尾又开始 restart，配置生成会被打断，
-       产出 0 字节 json → xray 启动 EOF（假启动）。
-       所以操作后轮询等 passwall 脚本进程收敛，开启时再确认核心进程已拉起。 */
-    async function procAlive(pattern) {
-      try {
-        const r = await ubus('luci', 'getProcessList', {});
-        return ((r && r.result) || []).some(
-          p => String(p.COMMAND || '').indexOf(pattern) !== -1);
-      } catch (_) { return false; }
-    }
-    async function waitPasswallQuiet(timeoutMs) {
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        const busy = await procAlive('/etc/init.d/passwall')
-          || await procAlive('/usr/share/passwall/app.sh');
-        if (!busy) return true;
-        await new Promise(r => setTimeout(r, 500));
-      }
-      return false;
+      return await api('service', { act });
     }
 
     /* 服务开关：同步 uci global.enabled 主开关位（与 LuCI passwall 主开关一致），
        再执行 start/stop。开机自启位（/etc/rc.d）不受影响。
        注意 global.enabled 同时是 passwall 启动时的判断依据：
-       置 0 后重启路由器不会自动拉起代理，重新开启即恢复 */
+       置 0 后重启路由器不会自动拉起代理，重新开启即恢复。
+       返回后端探活得到的最终 running（布尔），供 toggle 直接更新状态。 */
     async function applyService(name, to) {
       let section = null;
       try {
@@ -910,19 +890,9 @@
           values: { enabled: to ? '1' : '0' }
         });
         await ubus('uci', 'apply', { rollback: false, timeout: 10 });
-        await new Promise(r => setTimeout(r, 600));
-        /* 走控制器 service（进程在跑时 start 自动映射为 restart） */
-        await serviceAction(to ? 'start' : 'stop');
-        /* 等 stop/restart 的后台脚本收尾，避免新旧操作互相 kill 对方的 gen_config */
-        await waitPasswallQuiet(20000);
-        if (to && !(await procAlive('/tmp/etc/passwall/bin/'))) {
-          /* 核心进程没起来（偶发 gen 被打断）：再补一次 restart */
-          await serviceAction('restart');
-          await waitPasswallQuiet(20000);
-        }
-      } else {
-        await serviceAction(to ? 'start' : 'stop');
       }
+      const res = await serviceAction(to ? 'start' : 'stop');
+      return res && typeof res.running === 'boolean' ? res.running : null;
     }
 
     /* 查服务：rc.list 的 enabled（只读自启位）与 running（可能有） */
@@ -942,41 +912,6 @@
         if (e instanceof SessionError) throw e;
         return { ok: false, running: null, enabled: null };
       }
-    }
-
-    /* 真实运行态：luci.getProcessList（明确在 ACL 授权里；file.exec 虽列在
-       授权数组却实际被拒）拉进程列表，按路径特征匹配核心进程。
-       passwall 的 xray/chinadns-ng 都在 /tmp/etc/passwall/bin/ 下，服务停了进程消失 */
-    async function queryProc(pattern, data) {
-      try {
-        const r = data || await ubus('luci', 'getProcessList', {});
-        const list = (r && r.result) || [];
-        /* 前缀匹配而非子串：核心进程的 COMMAND 都以该路径开头，
-           用 indexOf 会被 `ls /tmp/etc/passwall/bin`、`cat .../xray` 这类
-           命令行里带路径的临时 shell 误命中 */
-        return list.some(p => String(p.COMMAND || '').startsWith(pattern)) ? true
-          : list.length ? false   /* 列表拿到了但没有匹配进程 */
-            : null;                 /* 空列表视为异常，走降级 */
-      } catch (e) {
-        if (e instanceof SessionError) throw e;
-        return null;
-      }
-    }
-
-    /* 只查询单个服务的状态（开关操作完成后用，不整页 refresh）：rc.list + 进程匹配 */
-    async function queryItemStatus(it) {
-      const guess = loadGuess();
-      const p = S.rcAvailable ? await queryService(it.name)
-        : { ok: false, running: null, enabled: null };
-      if (S.rcAvailable && !p.ok) S.rcAvailable = false;
-      const proc = it.pgrep ? await queryProc(it.pgrep) : null;
-      let on, source;
-      if (proc !== null && proc !== undefined) { on = proc; source = 'rpc'; }
-      else if (p.running !== null && p.running !== undefined) { on = p.running; source = 'rpc'; }
-      else if (hasOwn(guess, it.name)) { on = !!guess[it.name]; source = 'guess'; }
-      else { on = false; source = 'guess'; }
-      S.status[it.name] = { on, source, enabled: p.enabled, known: p.ok || proc !== null };
-      return S.status[it.name];
     }
 
     async function login() {
@@ -1394,9 +1329,16 @@
         badgeEl.textContent = '处理中…';
       }
       try {
-        await applyService(name, to);        /* 只发 start 或 stop */
+        const running = await applyService(name, to);  /* 后端探活的最终态 */
         saveGuess(name, to);
-        await queryItemStatus(it);           /* 只查本条目的结果 */
+        /* service 已回最终运行态，直接用它更新，省掉 rc.list + getProcessList
+           两轮查询；enabled 位刚被 uci set 改成 to，无需再查。 */
+        S.status[name] = {
+          on: running !== null ? running : to,
+          source: 'rpc',
+          enabled: to,
+          known: true,
+        };
         draw();
         toast(`${name} 已${to ? '启动' : '停止'}`);
       } catch (e) {
