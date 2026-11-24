@@ -7,16 +7,21 @@
   <title>开关面板</title>
   <style>
     :root {
-      --bg: #0f1420;
-      --panel: #171e2e;
-      --line: #2a3550;
-      --text: #e8edf7;
-      --muted: #8a97b0;
-      --blue: #4f8cff;
-      --green: #2ecc71;
-      --red: #ff5c5c;
-      --amber: #e0a63a;
-      --radius: 14px
+      --bg: #0b101b;
+      --panel: #151d2d;
+      --line: rgba(255, 255, 255, .08);
+      --line-strong: rgba(255, 255, 255, .14);
+      --text: #eef2fb;
+      --muted: #8b98b3;
+      --blue: #5b9dff;
+      --green: #35d47c;
+      --red: #ff6b6b;
+      --amber: #f0b450;
+      --radius: 16px;
+      --card-bg: rgba(255, 255, 255, .035);
+      --card-border: rgba(255, 255, 255, .07);
+      --shadow-panel: 0 24px 60px rgba(0, 0, 0, .45);
+      --shadow-card: 0 12px 28px rgba(0, 0, 0, .32)
     }
 
     * {
@@ -27,7 +32,11 @@
 
     body {
       font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-      background: var(--bg);
+      background:
+        radial-gradient(1200px 720px at 12% -12%, rgba(91, 157, 255, .16), transparent 55%),
+        radial-gradient(1000px 620px at 112% 112%, rgba(53, 212, 124, .10), transparent 55%),
+        var(--bg);
+      background-attachment: fixed;
       color: var(--text);
       min-height: 100vh;
       display: flex;
@@ -50,15 +59,19 @@
     #login {
       display: none;
       max-width: 440px;
-      background: var(--panel);
-      border: 1px solid var(--line);
+      background: rgba(21, 29, 45, .86);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--line-strong);
       border-radius: var(--radius);
-      padding: 34px
+      padding: 34px;
+      box-shadow: var(--shadow-panel)
     }
 
     #login h1 {
       font-size: 21px;
-      margin-bottom: 6px
+      margin-bottom: 6px;
+      letter-spacing: .01em
     }
 
     #login p {
@@ -88,49 +101,66 @@
       height: 24px;
       border-radius: 50%;
       flex: none;
-      border: 2px solid rgba(79, 140, 255, .25);
+      border: 2px solid rgba(91, 157, 255, .25);
       border-top-color: var(--blue);
       animation: spin .8s linear infinite
     }
 
     input {
       width: 100%;
-      background: #1d2639;
+      background: rgba(255, 255, 255, .045);
       border: 1px solid var(--line);
       color: var(--text);
-      border-radius: 10px;
+      border-radius: 12px;
       padding: 13px 15px;
       font-size: 17px;
       outline: none;
-      margin-bottom: 14px
+      margin-bottom: 14px;
+      transition: border-color .18s ease, box-shadow .18s ease, background .18s ease
     }
 
     input:focus {
-      border-color: var(--blue)
+      border-color: var(--blue);
+      background: rgba(91, 157, 255, .07);
+      box-shadow: 0 0 0 3px rgba(91, 157, 255, .18)
     }
 
     button {
       width: 100%;
       border: none;
-      border-radius: 10px;
+      border-radius: 12px;
       padding: 13px;
       font-size: 17px;
       cursor: pointer;
-      background: var(--blue);
+      background: linear-gradient(135deg, #6aa8ff, var(--blue));
       color: #fff;
-      margin-top: 4px
+      margin-top: 4px;
+      box-shadow: 0 8px 20px rgba(91, 157, 255, .28);
+      transition: transform .15s ease, box-shadow .18s ease, filter .18s ease
+    }
+
+    button:hover {
+      filter: brightness(1.07)
+    }
+
+    button:active {
+      transform: translateY(1px)
     }
 
     button:disabled {
-      opacity: .6
+      opacity: .6;
+      cursor: default
     }
 
     #panel {
       display: none;
-      background: var(--panel);
-      border: 1px solid var(--line);
+      background: rgba(21, 29, 45, .82);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--line-strong);
       border-radius: var(--radius);
-      padding: 26px
+      padding: 28px;
+      box-shadow: var(--shadow-panel)
     }
 
     /* 登录框 <-> 主面板 之间才有过渡；加载态不参与过渡，只显示图标+文字 */
@@ -162,16 +192,25 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 14px
+      margin-bottom: 18px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--line)
     }
 
     .head h1 {
-      font-size: 19px
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: .02em;
+      background: linear-gradient(90deg, #fff, #c7d4ee);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent
     }
 
     .head small {
       color: var(--muted);
-      font-size: 14px;
+      -webkit-text-fill-color: var(--muted);
+      font-size: 13px;
       font-weight: 400
     }
 
@@ -227,20 +266,22 @@
 
     .sysinfo .cell,
     #list .cell {
-      background: rgba(255, 255, 255, .03);
-      border: 1px solid rgba(255, 255, 255, .05);
-      border-radius: 10px;
-      padding: 12px 14px
+      background: linear-gradient(180deg, rgba(255, 255, 255, .05), rgba(255, 255, 255, .02));
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 15px 16px;
+      transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease, background .18s ease
     }
 
     .sysinfo .k {
-      font-size: 13px;
-      color: var(--muted)
+      font-size: 12px;
+      color: var(--muted);
+      letter-spacing: .03em
     }
 
     .sysinfo .v {
-      font-size: 16px;
-      margin-top: 5px;
+      font-size: 17px;
+      margin-top: 6px;
       font-variant-numeric: tabular-nums;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -299,27 +340,28 @@
     }
 
     .badge {
-      font-size: 14px;
-      padding: 4px 12px;
-      border-radius: 12px;
-      background: rgba(46, 204, 113, .15);
+      font-size: 13px;
+      font-weight: 500;
+      padding: 5px 12px;
+      border-radius: 999px;
+      background: rgba(53, 212, 124, .14);
       color: var(--green);
       white-space: nowrap
     }
 
     .badge.off {
-      background: rgba(255, 92, 92, .15);
+      background: rgba(255, 107, 107, .14);
       color: var(--red)
     }
 
     .badge.warn {
-      background: rgba(224, 166, 58, .15);
+      background: rgba(240, 180, 80, .14);
       color: var(--amber)
     }
 
     .badge.guess {
       background: transparent;
-      border: 1px dashed var(--line);
+      border: 1px dashed var(--line-strong);
       color: var(--muted)
     }
 
@@ -327,11 +369,11 @@
       position: relative;
       width: 54px;
       height: 30px;
-      background: #1d2639;
+      background: rgba(255, 255, 255, .08);
       border: 1px solid var(--line);
       border-radius: 20px;
       cursor: pointer;
-      transition: .2s;
+      transition: background .2s ease, border-color .2s ease;
       flex-shrink: 0
     }
 
@@ -344,12 +386,13 @@
       height: 22px;
       border-radius: 50%;
       background: var(--muted);
-      transition: .2s
+      box-shadow: 0 2px 5px rgba(0, 0, 0, .35);
+      transition: left .2s ease, background .2s ease
     }
 
     .sw.on {
-      background: rgba(46, 204, 113, .25);
-      border-color: var(--green)
+      background: linear-gradient(135deg, rgba(53, 212, 124, .32), rgba(53, 212, 124, .2));
+      border-color: rgba(53, 212, 124, .55)
     }
 
     .sw.on::after {
@@ -382,7 +425,7 @@
     }
 
     .badge.loading {
-      background: rgba(79, 140, 255, .15);
+      background: rgba(91, 157, 255, .15);
       color: var(--blue)
     }
 
@@ -423,11 +466,14 @@
       left: 50%;
       transform: translateX(-50%) translateY(10px);
       opacity: 0;
-      background: #1d2639;
-      border: 1px solid var(--line);
+      background: rgba(29, 38, 57, .94);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid var(--line-strong);
       padding: 12px 22px;
       border-radius: 12px;
       font-size: 15px;
+      box-shadow: var(--shadow-card);
       transition: .25s;
       pointer-events: none;
       max-width: 90vw
@@ -440,29 +486,30 @@
 
     .cell.clickable {
       cursor: pointer;
-      transition: border-color .2s;
       position: relative;
-      padding-right: 44px
+      padding-right: 48px
     }
 
     .cell.clickable:hover {
-      border-color: rgba(79, 140, 255, .45)
+      border-color: rgba(91, 157, 255, .45);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-card)
     }
 
     /* 卡片右侧的「查看明细」圆形箭头 */
     .more {
       position: absolute;
-      right: 12px;
+      right: 14px;
       top: 50%;
-      width: 24px;
-      height: 24px;
-      margin-top: -12px;
+      width: 26px;
+      height: 26px;
+      margin-top: -13px;
       display: flex;
       align-items: center;
       justify-content: center;
       border-radius: 50%;
-      background: rgba(255, 255, 255, .05);
-      border: 1px solid rgba(255, 255, 255, .09);
+      background: rgba(255, 255, 255, .06);
+      border: 1px solid rgba(255, 255, 255, .1);
       color: var(--muted);
       transition: background .2s, border-color .2s, color .2s, transform .2s
     }
@@ -474,8 +521,8 @@
     }
 
     .cell.clickable:hover .more {
-      background: rgba(79, 140, 255, .16);
-      border-color: rgba(79, 140, 255, .5);
+      background: rgba(91, 157, 255, .18);
+      border-color: rgba(91, 157, 255, .5);
       color: var(--blue);
       transform: translateX(2px)
     }
@@ -487,7 +534,9 @@
     #devModal {
       position: fixed;
       inset: 0;
-      background: rgba(8, 12, 20, .72);
+      background: rgba(6, 10, 17, .7);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
       display: none;
       align-items: center;
       justify-content: center;
@@ -500,13 +549,14 @@
     }
 
     .modal-box {
-      background: var(--panel);
-      border: 1px solid var(--line);
+      background: rgba(21, 29, 45, .94);
+      border: 1px solid var(--line-strong);
       border-radius: var(--radius);
       width: min(620px, 96vw);
       max-height: 82vh;
       display: flex;
-      flex-direction: column
+      flex-direction: column;
+      box-shadow: var(--shadow-panel)
     }
 
     .modal-head {
@@ -519,7 +569,8 @@
     }
 
     .modal-head b {
-      font-size: 17px
+      font-size: 16px;
+      font-weight: 600
     }
 
     .modal-head .cnt {
@@ -530,13 +581,19 @@
     .modal-head button {
       margin-left: auto;
       width: auto;
-      padding: 6px 14px;
-      font-size: 14px;
+      padding: 7px 14px;
+      font-size: 13px;
       background: none;
-      border: 1px solid var(--line);
+      border: 1px solid var(--line-strong);
       color: var(--muted);
-      border-radius: 9px;
-      margin-top: 0
+      border-radius: 10px;
+      margin-top: 0;
+      transition: background .16s ease, color .16s ease, border-color .16s ease
+    }
+
+    .modal-head button:hover {
+      background: rgba(255, 255, 255, .06);
+      color: var(--text)
     }
 
     .devlist {
@@ -546,8 +603,14 @@
     }
 
     .devrow {
-      padding: 11px 0;
-      border-bottom: 1px solid rgba(255, 255, 255, .05)
+      padding: 12px 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, .05);
+      border-radius: 10px;
+      transition: background .15s ease
+    }
+
+    .devrow:hover {
+      background: rgba(255, 255, 255, .03)
     }
 
     .devrow:last-child {
@@ -599,12 +662,12 @@
     }
 
     .tag.v4 {
-      background: rgba(79, 140, 255, .16);
+      background: rgba(91, 157, 255, .16);
       color: var(--blue)
     }
 
     .tag.v6 {
-      background: rgba(46, 204, 113, .16);
+      background: rgba(53, 212, 124, .16);
       color: var(--green)
     }
 
@@ -700,6 +763,32 @@
       #toast {
         font-size: 14px
       }
+    }
+
+    ::selection {
+      background: rgba(91, 157, 255, .28)
+    }
+
+    .devlist,
+    .modal-body {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, .18) transparent
+    }
+
+    .devlist::-webkit-scrollbar,
+    .modal-body::-webkit-scrollbar {
+      width: 8px
+    }
+
+    .devlist::-webkit-scrollbar-thumb,
+    .modal-body::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, .16);
+      border-radius: 8px
+    }
+
+    .devlist::-webkit-scrollbar-track,
+    .modal-body::-webkit-scrollbar-track {
+      background: transparent
     }
   </style>
 </head>
@@ -1544,7 +1633,9 @@
     .ipap-modal {
       position: fixed;
       inset: 0;
-      background: rgba(8, 12, 20, .72);
+      background: rgba(6, 10, 17, .7);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
       display: none;
       align-items: center;
       justify-content: center;
@@ -1592,9 +1683,25 @@
 
     .ipap-modal th,
     .ipap-modal td {
-      padding: 5px 8px;
-      border-bottom: 1px solid rgba(128, 128, 128, .25);
+      padding: 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, .06);
       text-align: left
+    }
+
+    .ipap-modal th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 12px
+    }
+
+    .ipap-modal tbody tr,
+    .ipap-modal table tr:not(:first-child) {
+      transition: background .13s ease
+    }
+
+    .ipap-modal tbody tr:hover,
+    .ipap-modal table tr:not(:first-child):hover {
+      background: rgba(255, 255, 255, .035)
     }
 
     .ipap-modal td span.ip,
@@ -1615,14 +1722,15 @@
 
     .ipap-modal button {
       cursor: pointer;
-      border: 1px solid rgba(128, 128, 128, .4);
-      border-radius: 6px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
       padding: 4px 12px;
       font-size: 13px;
       background: transparent;
       color: inherit;
       margin-right: 6px;
-      width: auto
+      width: auto;
+      transition: background .16s ease, border-color .16s ease, color .16s ease
     }
 
     .ipap-modal button.ok:hover {
@@ -1668,13 +1776,19 @@
     .ipap-modal .ipap-search input {
       width: 100%;
       max-width: 320px;
-      padding: 7px 10px;
+      padding: 8px 12px;
       font-size: 13px;
-      background: transparent;
+      background: rgba(255, 255, 255, .045);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 10px;
       margin: 0;
-      color: inherit
+      color: inherit;
+      transition: border-color .18s ease, box-shadow .18s ease
+    }
+
+    .ipap-modal .ipap-search input:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(91, 157, 255, .18)
     }
 
     .ipap-modal .ipap-fams {
@@ -1693,7 +1807,7 @@
     }
 
     .ipap-modal button.ipap-fam.on {
-      background: rgba(79, 140, 255, .16);
+      background: rgba(91, 157, 255, .16);
       border-color: var(--blue);
       color: var(--blue)
     }
