@@ -85,7 +85,7 @@ _geo_clean() {
     printf '%s' "$s" | awk '{$1=$1; print}'
 }
 
-# 查询归属地：v4 先 qqwry，无结果回退 ip2region(i2r-v4)；v6 走 zx。任何失败都返回空，不阻塞审批
+# 查询归属地：v4 先 qqwry，无结果回退 ip2region；v6 走 zx。任何失败都返回空，不阻塞审批
 geoip() {
     local ip="$1" out text
     [ -x "$GEO_NALI" ] || return 0
@@ -96,7 +96,7 @@ geoip() {
             out=$(NALI_HOME="$GEO_HOME" "$GEO_NALI" -j "$ip" 2>/dev/null)
             text=$(_geo_text "$out")
             if [ -z "$text" ]; then
-                out=$(NALI_HOME="$GEO_HOME" NALI_DB_IP4=i2r-v4 "$GEO_NALI" -j "$ip" 2>/dev/null)
+                out=$(NALI_HOME="$GEO_HOME" NALI_DB_IP4=ip2region "$GEO_NALI" -j "$ip" 2>/dev/null)
             fi ;;
     esac
     text=$(_geo_text "$out")

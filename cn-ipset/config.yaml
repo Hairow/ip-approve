@@ -1,32 +1,85 @@
-# nali 地址库配置
-# 由 watch 脚本以 NALI_HOME=/etc/cn-ipset 加载本文件；库文件与二进制同目录。
-# download-urls 仅在执行 `nali update --db <name>` 时使用；仅 qqwry 指定 metowolf 源，
-# ip2region / zxipv6wry 不写下载源（zx 走 nali 内置源，ip2region 不由 nali update 刷新）。
 databases:
-    - name: i2r-v4
+    - name: qqwry
+      name-alias:
+        - chunzhen
+      format: qqwry
+      file: qqwry.dat
+      languages:
+        - zh-CN
+      types:
+        - IPv4
+      download-urls:
+        - https://github.com/metowolf/qqwry.dat/releases/latest/download/qqwry.dat
+    - name: zxipv6wry
+      name-alias:
+        - zxipv6
+        - zx
+      format: zxipv6wry
+      file: zxipv6wry.db
+      languages:
+        - zh-CN
+      types:
+        - IPv6
+    - name: geoip
+      name-alias:
+        - geoip2
+        - geolite
+        - geolite2
+      format: mmdb
+      file: GeoLite2-City.mmdb
+      languages:
+        - ALL
+      types:
+        - IPv4
+        - IPv6
+    - name: dbip
+      name-alias:
+        - db-ip
+      format: mmdb
+      file: dbip.mmdb
+      languages:
+        - ALL
+      types:
+        - IPv4
+        - IPv6
+    - name: ipip
+      format: ipip
+      file: ipipfree.ipdb
+      languages:
+        - zh-CN
+      types:
+        - IPv4
+        - IPv6
+    - name: ip2region
+      name-alias:
+        - i2r
       format: ip2region
       file: /etc/cn-ipset/ip2region_v4.xdb
       languages:
         - zh-CN
       types:
         - IPv4
-    - name: qqwry
-      format: qqwry
-      file: /etc/cn-ipset/qqwry.dat
+    - name: ip2location
+      format: ip2location
+      file: IP2LOCATION-LITE-DB3.IPV6.BIN
       languages:
-        - zh-CN
+        - en
       types:
         - IPv4
-      download-urls:
-        - "https://github.com/metowolf/qqwry.dat/releases/latest/download/qqwry.dat"
-    - name: zxipv6wry
-      format: zxipv6wry
-      file: /etc/cn-ipset/zxipv6wry.db
+        - IPv6
+    - name: cdn
+      format: cdn-yml
+      file: cdn.yml
       languages:
         - zh-CN
       types:
-        - IPv6
+        - CDN
+      download-urls:
+        - https://cdn.jsdelivr.net/gh/4ft35t/cdn/src/cdn.yml
+        - https://raw.githubusercontent.com/4ft35t/cdn/master/src/cdn.yml
+        - https://raw.githubusercontent.com/SukkaLab/cdn/master/src/cdn.yml
 selected:
+    cdn: cdn
     ipv4: qqwry
     ipv6: zxipv6wry
     lang: zh-CN
