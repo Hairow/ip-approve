@@ -31,7 +31,7 @@
 | approved-ip-watch.sh | 监听服务本体：解析探测日志 → nft pending 集合 + pending.list → 推钉钉 |
 | sync-approve-firewall.sh | 同步/重建防火墙：各组端口同步 + 缺失 ipset/规则自动重建（改端口变量后运行） |
 | cn-ipset/refresh-cn-ipset.sh | 大陆集合刷新脚本：从 PassWall 规则同步 chnroute{,6} 副本 → `fw4 reload-sets`；副本为空则不刷新，避免集合被刷空导致全挡 |
-| cn-ipset/update-qqwry.sh | 离线纯真库更新脚本：拉 version.json 取 latest(YYYYMMDD)，新版本才下载 qqwry.dat，大小校验后原子替换；失败沿用旧库。cron 每天 04:30 运行 |
+| cn-ipset/refresh-ip-geoip.sh | 离线 IP 归属地库刷新脚本：拉 version.json 取 latest(YYYYMMDD)，新版本才下载 qqwry.dat，大小校验后原子替换；失败沿用旧库。cron 每天 04:30 运行 |
 | cn-ipset/chnroute / chnroute6 | 大陆 IPv4/IPv6 路由表副本（运行时数据，不入库；远端位于 /etc/cn-ipset/） |
 | cn-ipset/qqwry.dat | 离线纯真 IP 库（国内 IP → 省市归属，运行时数据，不入库；远端位于 /etc/cn-ipset/） |
 | quick/cgi-bin/ip-approve-quick | 钉钉按钮的免登录签名 CGI（HMAC + 30 分钟时效 + pending 校验） |

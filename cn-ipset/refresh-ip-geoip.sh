@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
-# update-qqwry.sh
-# 目的：定时拉取离线纯真 IP 库 qqwry.dat（国内 IP → 省市归属），供审批面板/钉钉推送查询归属地。
+# refresh-ip-geoip.sh
+# 目的：定时刷新离线 IP 归属地库 qqwry.dat（国内 IP → 省市归属），供审批面板/钉钉推送查询归属地。
 #
 # 数据流：
 #   1. 读 version.json 取 latest（YYYYMMDD），与本地版本戳比对，无新版本直接退出
@@ -15,7 +15,7 @@ VER_URL="https://raw.githubusercontent.com/metowolf/qqwry.dat/main/version.json"
 DAT_URL="https://github.com/metowolf/qqwry.dat/releases/latest/download/qqwry.dat"
 DAT="/etc/cn-ipset/qqwry.dat"
 STAMP="/etc/cn-ipset/.qqwry.version"
-TAG="qqwry"
+TAG="geoip"
 
 # 库文件最小字节数（约 1MB），低于此值视为下载损坏
 MIN_SIZE=1000000
