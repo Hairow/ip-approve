@@ -31,7 +31,7 @@
 | approved-ip-watch.sh | 监听服务本体：解析探测日志 → nft pending 集合 + pending.list → 推钉钉 |
 | sync-approve-firewall.sh | 同步/重建防火墙：各组端口同步 + 缺失 ipset/规则自动重建（改端口变量后运行） |
 | cn-ipset/refresh-cn-ipset.sh | 大陆集合刷新脚本：从 PassWall 规则同步 chnroute{,6} 副本 → `fw4 reload-sets`；副本为空则不刷新，避免集合被刷空导致全挡 |
-| cn-ipset/config.yaml | nali 运行配置：基于上游 default 全量条目，仅 qqwry 指向 metowolf 源；ip2region 回退库指本地绝对路径；通过 `NALI_HOME=/etc/cn-ipset` 加载 |
+| cn-ipset/config.yaml | nali 运行配置：基于上游 default 全量条目，库文件均为相对路径；qqwry 指向 metowolf 源，ip2region 回退库用 v4 拆分双源；通过 `NALI_HOME=/etc/cn-ipset` 加载 |
 | cn-ipset/config.yaml.default | nali v0.8.1 首次运行自动生成的上游默认配置基线（全部内置条目 + 默认下载源），仅作对照参考；设备实际使用 `config.yaml` |
 | cn-ipset/nali-linux-armv8-v0.8.1.gz (+ `.sha256`) | nali release 压缩包随仓库入库；设备上解压为 `/etc/cn-ipset/nali` |
 | cn-ipset/chnroute / chnroute6 | 大陆 IPv4/IPv6 路由表副本（运行时数据，不入库；远端位于 /etc/cn-ipset/） |
@@ -97,7 +97,7 @@ ls -l /etc/cn-ipset/ip2region_v4.xdb /etc/cn-ipset/qqwry.dat /etc/cn-ipset/zxipv
 - `NALI_HOME=/etc/cn-ipset`：**配置目录与数据目录都指向该目录**（最简便，本项目采用）；
 - 或分开指定：`NALI_CONFIG_HOME`（配置目录）、`NALI_DB_HOME`（库目录）。
 
-`config.yaml.default` 是 nali 在空目录首次运行时自动落盘的上游默认稿（相对路径、内置全部条目与默认源）；仓库内 `config.yaml` 保留 default 全量条目，偏离三处：qqwry 下载源换为 metowolf，ip2region 回退库 `file` 指向本地绝对路径、下载源换为可达的 v4 拆分库双源（default 内置的旧 `ip2region.xdb` 路径在 master 已失效）。
+`config.yaml.default` 是 nali 在空目录首次运行时自动落盘的上游默认稿（相对路径、内置全部条目与默认源）；仓库内 `config.yaml` 保留 default 全量条目，库文件均为相对路径（相对 `NALI_HOME` 解析）。偏离两处：qqwry 下载源换为 metowolf；ip2region 回退库文件名随拆分改为 `ip2region_v4.xdb`、下载源换为可达的 v4 拆分库双源（default 内置的旧 `ip2region.xdb` 路径在 master 已失效）。
 
 配置文件名固定为 `<配置目录>/config.yaml`。关键三条（其余条目同 default 基线）：
 
@@ -112,7 +112,7 @@ databases:
         - "https://github.com/metowolf/qqwry.dat/releases/latest/download/qqwry.dat"
     - name: ip2region
       format: ip2region
-      file: /etc/cn-ipset/ip2region_v4.xdb
+      file: ip2region_v4.xdb
       types:
         - IPv4
       download-urls:

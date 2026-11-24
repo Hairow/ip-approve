@@ -54,7 +54,7 @@ databases:
       name-alias:
         - i2r
       format: ip2region
-      file: /etc/cn-ipset/ip2region_v4.xdb
+      file: ip2region_v4.xdb
       languages:
         - zh-CN
       types:
