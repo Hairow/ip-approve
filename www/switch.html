@@ -1873,9 +1873,10 @@
           const ip = esc(row.ip);
           const time = esc(row.time || '');
           const port = (row.port && row.port !== '-') ? esc(row.port) : '';
+          const geo = row.geo ? esc(row.geo) : '';
           html += '<tr data-ip="' + ip + '">'
             + '<td class="ck"><input type="checkbox" class="ipap-row-check"' + (selected.has(row.ip) ? ' checked' : '') + '></td>'
-            + '<td class="ip" style="cursor:pointer" title="点击选中/取消选中，同时复制 IP"><span class="ip">' + ip + '</span><span class="t">时间 ' + time + (port ? ' 端口 ' + port : '') + '</span></td>'
+            + '<td class="ip" style="cursor:pointer" title="点击选中/取消选中，同时复制 IP"><span class="ip">' + ip + '</span><span class="t">时间 ' + time + (port ? ' 端口 ' + port : '') + (geo ? ' · ' + geo : '') + '</span></td>'
             + '<td><div class="btns"><button class="ok" data-act="approve">批准</button>'
             + '<button class="no" data-act="deny">拒绝</button></div></td></tr>';
         }

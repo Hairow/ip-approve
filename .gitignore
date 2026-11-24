@@ -8,9 +8,12 @@ approved.conf
 cn-ipset/chnroute
 cn-ipset/chnroute6
 cn-ipset/.cn-ipset.md5
-# 离线纯真库及其版本戳由 update-qqwry.sh 定时下载，不入库
+# 离线归属地库由 `nali update` 定时下载，运行时产物不入库
 cn-ipset/qqwry.dat
-cn-ipset/.qqwry.version
+cn-ipset/ip2region_v4.xdb
+cn-ipset/zxipv6wry.db
+# nali 解压后的二进制不入库；release gz 包 + .sha256 + config.yaml 随仓库入库，部署时解压到 /etc/cn-ipset/nali
+cn-ipset/nali
 
 # 备份
 firewall.bak-*

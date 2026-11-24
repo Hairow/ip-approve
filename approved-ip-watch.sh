@@ -8,12 +8,19 @@ CONF='/etc/ip-approve/approved.conf'
 PENDING='/etc/ip-approve/pending.list'
 PIDF='/tmp/.approved-ip-watch.pid'
 LASTNOT='/tmp/.approved-ip-lastnot'
+GEO_NALI='/etc/cn-ipset/nali'
+GEO_HOME='/etc/cn-ipset'
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 [ -f "$CONF" ] && . "$CONF"
 
+# 归属地文本进钉钉 JSON 前转义反斜杠与双引号
+_geo_json() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
 notify() {
-    local ip="$1" port="$2" now last
+    local ip="$1" port="$2" geo="$3" now last
     [ -n "$DING_WEBHOOK" ] || return 0
     case "$DING_WEBHOOK" in *access_token=) return 0;; esac
     now=$(date +%s)
@@ -27,10 +34,10 @@ notify() {
         enc=$(printf '%s' "$sign" | awk '{gsub(/\+/,"%2B"); gsub(/\//,"%2F"); gsub(/=/,"%3D"); print}')
         url="$url&timestamp=$ts&sign=$enc"
     fi
-    local stamp
+    local stamp pinfo="" body content
     stamp=$(date '+%F %T')
-    local pinfo=""
     case "$port" in ''|'-') pinfo="" ;; *) pinfo="目标端口 $port" ;; esac
+    [ -n "$geo" ] && geo=$(_geo_json "$geo")
 
     # 快捷按钮：HMAC 签名链接（30 分钟有效），无 QUICK_SECRET 时退回纯文本
     if [ -n "$QUICK_SECRET" ] && [ -n "$QUICK_URL" ]; then
@@ -41,12 +48,16 @@ notify() {
         local uok uno
         uok="$QUICK_URL/cgi-bin/ip-approve-quick?a=approve&ip=$ip&ts=$qts&sign=$sa"
         uno="$QUICK_URL/cgi-bin/ip-approve-quick?a=deny&ip=$ip&ts=$qts&sign=$sd"
+        body="#### 【待审批IP】$ip\\n\\n于 $stamp 探测进入待审批队列${pinfo:+ · $pinfo}"
+        [ -n "$geo" ] && body="$body\\n\\n归属地 $geo"
+        body="$body\\n\\n> 点下方按钮完成审批，链接 30 分钟内有效"
         curl -s -m 5 -H 'Content-Type: application/json' \
-            -d '{"msgtype":"actionCard","actionCard":{"title":"【待审批IP】'"$ip"'","text":"#### 【待审批IP】'"$ip"'\n\n于 '"$stamp"' 探测进入待审批队列'"${pinfo:+ · $pinfo}"'\n\n> 点下方按钮完成审批，链接 30 分钟内有效","hideAvatar":"0","btnOrientation":"1","btns":[{"title":"✅ 批准","actionURL":"'"$uok"'"},{"title":"🚫 拒绝","actionURL":"'"$uno"'"}]}}' \
+            -d '{"msgtype":"actionCard","actionCard":{"title":"【待审批IP】'"$ip"'","text":"'"$body"'","hideAvatar":"0","btnOrientation":"1","btns":[{"title":"✅ 批准","actionURL":"'"$uok"'"},{"title":"🚫 拒绝","actionURL":"'"$uno"'"}]}}' \
             "$url" >/dev/null
     else
+        content="【待审批IP】$ip 于 $stamp 探测进入待审批队列${pinfo:+（$pinfo）}${geo:+，归属地 $geo}，请及时审批"
         curl -s -m 5 -H 'Content-Type: application/json' \
-            -d '{"msgtype":"text","text":{"content":"【待审批IP】'"$ip"' 于 '"$stamp"' 探测进入待审批队列'"${pinfo:+（$pinfo）}"'，请及时审批"}}' \
+            -d '{"msgtype":"text","text":{"content":"'"$content"'"}}' \
             "$url" >/dev/null
     fi
 }
@@ -61,13 +72,49 @@ valid_src() {
     esac
 }
 
+# 从 nali -j 的 JSON 输出提取 "text" 字段
+_geo_text() {
+    printf '%s' "$1" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p'
+}
+
+# 归一化归属地展示：ip2region 竖线分段转空格，去掉末尾两位国家代码；压缩多余空白
+_geo_clean() {
+    local s
+    s=$(printf '%s' "$1" | tr '|' ' ')
+    s=$(printf '%s' "$s" | sed -E 's/[[:space:]]+[A-Za-z]{2}$//')
+    printf '%s' "$s" | awk '{$1=$1; print}'
+}
+
+# 查询归属地：v4 先 ip2region，无结果回退 qqwry；v6 走 zx。任何失败都返回空，不阻塞审批
+geoip() {
+    local ip="$1" out text
+    [ -x "$GEO_NALI" ] || return 0
+    case "$ip" in
+        *:*)
+            out=$(NALI_HOME="$GEO_HOME" "$GEO_NALI" -j "$ip" 2>/dev/null) ;;
+        *)
+            out=$(NALI_HOME="$GEO_HOME" "$GEO_NALI" -j "$ip" 2>/dev/null)
+            text=$(_geo_text "$out")
+            if [ -z "$text" ]; then
+                out=$(NALI_HOME="$GEO_HOME" NALI_DB_IP4=qqwry "$GEO_NALI" -j "$ip" 2>/dev/null)
+            fi ;;
+    esac
+    text=$(_geo_text "$out")
+    [ -n "$text" ] && _geo_clean "$text"
+}
+
 new_ip() {
-    local ip="$2" port="$3"
+    local set="$1" ip="$2" port="$3" geo
     valid_src "$ip" || return
     grep -qF "$ip " "$PENDING" 2>/dev/null && return
     nft add element inet fw4 "$1" "{ $ip }" >/dev/null 2>&1 || return
-    echo "$ip $(date '+%F %T') ${port:--}" >> "$PENDING"
-    notify "$ip" "$port"
+    geo=$(geoip "$ip")
+    if [ -n "$geo" ]; then
+        echo "$ip $(date '+%F %T') ${port:--} $geo" >> "$PENDING"
+    else
+        echo "$ip $(date '+%F %T') ${port:--}" >> "$PENDING"
+    fi
+    notify "$ip" "$port" "$geo"
 }
 
 by_type() {

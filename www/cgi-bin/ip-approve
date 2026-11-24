@@ -15,6 +15,11 @@ json_out() {
 
 fail() { json_out "{\"ok\":false,\"error\":\"$1\"}"; exit 0; }
 
+# 字符串进 JSON 前转义反斜杠与双引号
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
 # 写动作仅限 POST：GET 触发返回 405，避免跨站简单请求 CSRF
 method_not_allowed() {
     printf 'Status: 405 Method Not Allowed\r\nContent-Type: application/json\r\nAllow: POST\r\nCache-Control: no-store\r\n\r\n{"ok":false,"error":"method-not-allowed"}'
@@ -63,16 +68,16 @@ fail_add() {  # $1=ip $2=error
 
 # ---- 动作 ----
 action_list() {
-    local rows="[" first=1 ip a b c ts port
-    # pending.list 行格式：ip 日期 钟点 [端口]（时间含空格，不能直接 read ip ts port）
-    while read -r ip a b c; do
+    local rows="[" first=1 ip a b c rest ts port geo
+    # pending.list 行格式：ip 日期 钟点 端口 [归属地]（时间含空格；归属地在端口之后，可含空格）
+    while read -r ip a b c rest; do
         [ -n "$ip" ] || continue
-        case "$c" in
-            *[!0-9]*|'') ts="$a $b"; port="-";;
-            *)           ts="$a $b"; port="$c";;
-        esac
+        ts="$a $b"
+        port="$c"
+        case "$port" in *[!0-9]*|'') port="-";; esac
+        geo="$rest"
         [ $first = 1 ] && first=0 || rows="$rows,"
-        rows="$rows{\"ip\":\"$ip\",\"time\":\"$ts\",\"port\":\"$port\"}"
+        rows="$rows{\"ip\":\"$ip\",\"time\":\"$ts\",\"port\":\"$port\",\"geo\":\"$(json_escape "$geo")\"}"
     done < "$CN/pending.list"
     rows="$rows]"
     json_out "{\"ok\":true,\"rows\":$rows}"
