@@ -77,10 +77,11 @@ _geo_text() {
     printf '%s' "$1" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p'
 }
 
-# 归一化归属地展示：ip2region 竖线分段转空格，去掉末尾两位国家代码；压缩多余空白
+# 归一化归属地展示：先还原 JSON 字面 \t \n \r 为空格，ip2region 竖线分段转空格，
+# 去掉末尾两位国家代码；压缩多余空白
 _geo_clean() {
     local s
-    s=$(printf '%s' "$1" | tr '|' ' ')
+    s=$(printf '%s' "$1" | sed 's/\\t/ /g; s/\\n/ /g; s/\\r/ /g; s/|/ /g')
     s=$(printf '%s' "$s" | sed -E 's/[[:space:]]+[A-Za-z]{2}$//')
     printf '%s' "$s" | awk '{$1=$1; print}'
 }
