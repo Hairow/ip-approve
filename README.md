@@ -31,6 +31,7 @@
 | approved-ip-watch.sh | 监听服务本体：解析探测日志 → nft pending 集合 + pending.list → 推钉钉 |
 | sync-approve-firewall.sh | 同步/重建防火墙：各组端口同步 + 缺失 ipset/规则自动重建（改端口变量后运行） |
 | cn-ipset/refresh-cn-ipset.sh | 大陆集合刷新脚本：从 PassWall 规则同步 chnroute{,6} 副本 → `fw4 reload-sets`；副本为空则不刷新，避免集合被刷空导致全挡 |
+| cn-ipset/refresh-nali-db.sh | 归属地/CDN 库刷新脚本：先备份四库 → `nali update` → 非空校验、异常自动回滚 → 保留最近 3 份备份 |
 | cn-ipset/config.yaml | nali 运行配置：基于上游 default 全量条目，库文件均为相对路径；qqwry 指向 metowolf 源，ip2region 回退库用 v4 拆分双源；通过 `NALI_HOME=/etc/cn-ipset` 加载 |
 | cn-ipset/config.yaml.default | nali v0.8.1 首次运行自动生成的上游默认配置基线（全部内置条目 + 默认下载源），仅作对照参考；设备实际使用 `config.yaml` |
 | cn-ipset/nali-linux-armv8-v0.8.1.gz (+ `.sha256`) | nali release 压缩包随仓库入库；设备上解压为 `/etc/cn-ipset/nali` |
@@ -157,15 +158,18 @@ NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali -j 2001:4860:4860::8888
 
 ### 地址库刷新（cron）
 
-nali 本身不是守护进程，**没有内置定时任务**；库刷新由外部 cron 调用 `nali update` 触发。设备 crontab：
+nali 本身不是守护进程，**没有内置定时任务**；库刷新由外部 cron 调用包装脚本 `cn-ipset/refresh-nali-db.sh` 触发（脚本内部再调 `nali update`）。设备 crontab：
 
 ```cron
-30 4 * * * NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db qqwry,zxipv6wry,ip2region,cdn 2>&1 | logger -t nali-update
+30 4 * * * /etc/cn-ipset/refresh-nali-db.sh
 ```
 
+脚本流程：**先备份现有四库 → 调 `nali update` 刷新 → 逐库校验（存在且非空）→ 缺失/空文件自动从本次备份回滚 → 清理旧备份**。
+
+- 备份目录 `/etc/cn-ipset/backup/<YYYYmmdd-HHMMSS>/`，`latest` 软链指向最近一次；仅保留最近 3 份，更早的自动删除。
 - `--db` 按 config 条目名更新：`qqwry` 读 metowolf `download-urls`；`ip2region` 读 v4 拆分库双源（jsDelivr → raw）；`zxipv6wry` 未配源，走 nali 内置 `https://ip.zxinc.org/ip.7z`（下载后解压取 `ipv6wry.db`）；`cdn` 读三源（jsDelivr 4ft35t → raw 4ft35t → raw SukkaLab）。
 - `nali update` 只在执行时拉库，不做版本比对，每次全量下载；四库合计约 41MB（`cdn.yml` 仅约 26KB），凌晨低峰执行一次。
-- 已知短板（v0.8.1）：写入为「先删旧库再直写目标文件」，非原子；ip2region 条目不做内容校验（qqwry / zx 有内置 CheckFile）；HTTP 无重试、超时固定（全局 60s、TLS 握手 5s），qqwry 约 27MB 偶发读 body 超时。断电/中断/超时不会覆盖通过校验的旧库，下次 cron 重试即可。
+- 已知短板（v0.8.1）：写入为「先删旧库再直写目标文件」，非原子；ip2region 条目不做内容校验（qqwry / zx 有内置 CheckFile）；HTTP 无重试、超时固定（全局 60s、TLS 握手 5s），qqwry 约 27MB 偶发读 body 超时。包装脚本以「非空」作兜底校验，落成空文件会自动回滚到备份；但非空的内容损坏仍需人工核对，下次 cron 重试即可。
 
 ## 服务操作（用 init 脚本，不要裸跑脚本本体）
 
