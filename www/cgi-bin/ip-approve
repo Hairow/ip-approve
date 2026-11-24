@@ -84,17 +84,34 @@ action_list() {
     exit 0
 }
 
-# 黑名单列表：读 ip-deny.list(v4) + ip-deny6.list(v6)，带 family 标签
+# 黑名单列表：读 ip-deny.list(v4) + ip-deny6.list(v6)，带 family 标签；
+# 紧随 IP 行的 `# 归属地` 注释作为该条 geo（文件头独立注释不计入）
 action_denylist() {
-    local rows="[" first=1 ip fam f
+    local rows="[" first=1 fam f line cur_ip cur_geo
     for fam in v4 v6; do
         if [ "$fam" = v4 ]; then f="$CN/ip-deny.list"; else f="$CN/ip-deny6.list"; fi
-        while read -r ip; do
-            [ -n "$ip" ] || continue
-            case "$ip" in \#*|';'*) continue;; esac   # 跳过注释行
+        cur_ip=""; cur_geo=""
+        flush_deny() {
+            [ -n "$cur_ip" ] || return 0
             [ $first = 1 ] && first=0 || rows="$rows,"
-            rows="$rows{\"ip\":\"$ip\",\"family\":\"$fam\"}"
+            rows="$rows{\"ip\":\"$cur_ip\",\"family\":\"$fam\",\"geo\":\"$(json_escape "$cur_geo")\"}"
+            cur_ip=""; cur_geo=""
+        }
+        while read -r line; do
+            [ -n "$line" ] || continue
+            case "$line" in
+                \#*|';'*)
+                    if [ -n "$cur_ip" ]; then
+                        cur_geo=$(printf '%s' "$line" | sed -E 's/^#[[:space:]]*//; s/[[:space:]]+$//')
+                    fi
+                    ;;
+                *)
+                    flush_deny
+                    cur_ip="$line"
+                    ;;
+            esac
         done < "$f" 2>/dev/null
+        flush_deny
     done
     rows="$rows]"
     json_out "{\"ok\":true,\"rows\":$rows}"
