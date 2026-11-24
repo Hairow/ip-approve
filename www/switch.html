@@ -1189,9 +1189,13 @@
         }
         S.status[it.name] = { on, source, enabled: p.enabled, known: p.ok || proc !== null };
       });
-      if (window.ipapCountSync) { try { await window.ipapCountSync(); } catch (e) { if (e instanceof SessionError) throw e; } }
-      if (window.denyCountSync) { try { await window.denyCountSync(); } catch (e) { if (e instanceof SessionError) throw e; } }
-      if (window.allowCountSync) { try { await window.allowCountSync(); } catch (e) { if (e instanceof SessionError) throw e; } }
+      /* 待审批 / 黑白名单计数：只在首屏刷新（带 prefetched）拉一次；
+         定时轮询、切回前台、操作回滚不再请求，改由点击对应卡片打开弹层时各自 refresh 拉取 */
+      if (prefetched) {
+        if (window.ipapCountSync) { try { await window.ipapCountSync(); } catch (e) { if (e instanceof SessionError) throw e; } }
+        if (window.denyCountSync) { try { await window.denyCountSync(); } catch (e) { if (e instanceof SessionError) throw e; } }
+        if (window.allowCountSync) { try { await window.allowCountSync(); } catch (e) { if (e instanceof SessionError) throw e; } }
+      }
       draw();
       /* 首屏数据已就绪：从加载态切到主面板（内容自己 viewIn 浮入），再记录真实高度 */
       if (!panelReady) {
