@@ -2041,6 +2041,7 @@
       let allRows = [];          // [{ ip, family, geo }]
       let page = 1;
       let selected = new Set();
+      let removing = false;      // 移除请求进行中，忽略重复点击
       let fam = 'all';           // 分类筛选：all / v4 / v6
 
       window.denyBlockedCount = function () { return allRows.length; };
@@ -2193,18 +2194,23 @@
         return await r.json();
       }
       window.denyUnban = async function (ip) {
+        if (removing) return;
         const msg = document.getElementById('deny-msg');
+        removing = true;
         try {
           const j = await denyPost([ip]);
           const n = (j.done || []).length;
           if (j.ok && n > 0) { msg.textContent = '已移除 ' + ip; setTimeout(denyRefresh, 100); }
           else { msg.textContent = '操作未生效：' + (j.error || (j.failed && j.failed[0] && j.failed[0].error) || '未在名单'); setTimeout(denyRefresh, 300); }
         } catch (e) { msg.textContent = '请求失败：' + e; }
+        finally { removing = false; }
       };
       window.denyBatchUnban = async function () {
+        if (removing) return;
         const msg = document.getElementById('deny-msg');
         const ips = [...selected];
         if (!ips.length) return;
+        removing = true;
         msg.textContent = '移除中… 共 ' + ips.length + ' 条';
         try {
           const j = await denyPost(ips);
@@ -2214,6 +2220,7 @@
           selected.clear();
           setTimeout(denyRefresh, 100);
         } catch (e) { msg.textContent = '请求失败：' + e; }
+        finally { removing = false; }
       };
 
       window.denyOpen = function () {
@@ -2237,6 +2244,7 @@
       let page = 1;
       let selected = new Set();
       let fam = 'all';           // 分类筛选：all / v4 / v6
+      let removing = false;      // 移除请求进行中，忽略重复点击
 
       window.allowAllowedCount = function () { return allRows.length; };
 
@@ -2388,18 +2396,23 @@
         return await r.json();
       }
       window.allowUnallow = async function (ip) {
+        if (removing) return;
         const msg = document.getElementById('allow-msg');
+        removing = true;
         try {
           const j = await allowPost([ip]);
           const n = (j.done || []).length;
           if (j.ok && n > 0) { msg.textContent = '已移除 ' + ip; setTimeout(allowRefresh, 100); }
           else { msg.textContent = '操作未生效：' + (j.error || (j.failed && j.failed[0] && j.failed[0].error) || '未在名单'); setTimeout(allowRefresh, 300); }
         } catch (e) { msg.textContent = '请求失败：' + e; }
+        finally { removing = false; }
       };
       window.allowBatchUnallow = async function () {
+        if (removing) return;
         const msg = document.getElementById('allow-msg');
         const ips = [...selected];
         if (!ips.length) return;
+        removing = true;
         msg.textContent = '移除中… 共 ' + ips.length + ' 条';
         try {
           const j = await allowPost(ips);
@@ -2409,6 +2422,7 @@
           selected.clear();
           setTimeout(allowRefresh, 100);
         } catch (e) { msg.textContent = '请求失败：' + e; }
+        finally { removing = false; }
       };
 
       window.allowOpen = function () {

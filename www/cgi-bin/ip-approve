@@ -7,7 +7,21 @@
 
 CN=/etc/ip-approve
 PIDF_LOCK=/tmp/.pending.lock
+LOG=/tmp/.ipap-cgi.log
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+# 诊断日志：仅追加到文件，不影响 JSON 响应；排查后可移除
+dbg() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
+
+# 获取 fd 9 上的锁：非阻塞重试约 5 秒，避免瞬时抢锁直接失败；超时返回 1
+take_lock() {
+    local n=0
+    while [ "$n" -lt 25 ]; do
+        flock -n 9 && return 0
+        n=$((n+1)); sleep 0.2
+    done
+    return 1
+}
 
 json_out() {
     printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n%s' "$1"
@@ -141,6 +155,7 @@ action_allowlist() {
 # 调用前设置全局：RM_F4/RM_F6 名单文件，RM_SET4/RM_SET6 nft 集合，RM_MISS 未命中错误码，RM_ACT 动作名
 action_remove() {
     local ok4="" ok6="" ip
+    dbg "remove enter act=$RM_ACT ips=$*"
     for ip in "$@"; do
         case "$ip" in
             *:*) if valid_entry "$ip"; then ok6="$ok6 $ip"; else fail_add "$ip" "bad-entry"; fi;;
@@ -154,27 +169,35 @@ action_remove() {
     # flock 内原子更新两份名单；记录实际命中的条目
     rm -f /tmp/.ipap.rm.done /tmp/.ipap.rm.lockrc
     (
-        flock -n 9 || exit 1
+        take_lock || { dbg "remove LOCK-BUSY act=$RM_ACT"; exit 1; }
         : > /tmp/.ipap.rm.done
         for ip in $ok4; do
-            grep -qxF "$ip" "$RM_F4" 2>/dev/null || continue
-            echo "$ip" >> /tmp/.ipap.rm.done
-            # 同时删正文行与对应的 `# <ip> <geo>` 注释行
-            awk -v ip="$ip" '$1 == ip { next } /^#/ && $2 == ip { next } { print }' \
-                "$RM_F4" > /tmp/.rm4.new 2>/dev/null
-            mv /tmp/.rm4.new "$RM_F4"
+            if grep -qxF "$ip" "$RM_F4" 2>/dev/null; then
+                dbg "remove hit v4 $ip"
+                echo "$ip" >> /tmp/.ipap.rm.done
+                # 同时删正文行与对应的 `# <ip> <geo>` 注释行
+                awk -v ip="$ip" '$1 == ip { next } /^#/ && $2 == ip { next } { print }' \
+                    "$RM_F4" > /tmp/.rm4.new 2>/dev/null
+                mv /tmp/.rm4.new "$RM_F4"
+            else
+                dbg "remove miss v4 $ip"
+            fi
         done
         for ip in $ok6; do
-            grep -qxF "$ip" "$RM_F6" 2>/dev/null || continue
-            echo "$ip" >> /tmp/.ipap.rm.done
-            awk -v ip="$ip" '$1 == ip { next } /^#/ && $2 == ip { next } { print }' \
-                "$RM_F6" > /tmp/.rm6.new 2>/dev/null
-            mv /tmp/.rm6.new "$RM_F6"
+            if grep -qxF "$ip" "$RM_F6" 2>/dev/null; then
+                dbg "remove hit v6 $ip"
+                echo "$ip" >> /tmp/.ipap.rm.done
+                awk -v ip="$ip" '$1 == ip { next } /^#/ && $2 == ip { next } { print }' \
+                    "$RM_F6" > /tmp/.rm6.new 2>/dev/null
+                mv /tmp/.rm6.new "$RM_F6"
+            else
+                dbg "remove miss v6 $ip"
+            fi
         done
         echo ok > /tmp/.ipap.rm.lockrc
     ) 9>"$PIDF_LOCK"
 
-    [ -f /tmp/.ipap.rm.lockrc ] || fail "op-failed"
+    [ -f /tmp/.ipap.rm.lockrc ] || { dbg "remove OP-FAILED act=$RM_ACT ips=$okips"; fail "op-failed"; }
     rm -f /tmp/.ipap.rm.lockrc
 
     # 未命中的报对应错误码
@@ -203,6 +226,7 @@ action_remove() {
     for ip in $done_ips; do [ $df = 1 ] && df=0 || dj="$dj,"; dj="$dj\"$ip\""; done
     dj="$dj]"
     FAILED_JSON="$FAILED_JSON]"
+    dbg "remove result act=$RM_ACT done=[$done_ips] failed=$FAILED_JSON"
     json_out "{\"ok\":true,\"action\":\"$RM_ACT\",\"done\":$dj,\"failed\":$FAILED_JSON}"
     exit 0
 }
@@ -248,7 +272,7 @@ action_set() {
     # 2. flock 内原子更新底账：从 pending.list 移除命中的，记录 done/miss
     rm -f /tmp/.ipap.done /tmp/.ipap.geo /tmp/.ipap.lockrc
     (
-        flock -n 9 || exit 1
+        take_lock || exit 1
         : > /tmp/.ipap.done
         : > /tmp/.ipap.geo
         awk -v ok="$okips" '
@@ -318,6 +342,7 @@ action_set() {
 # ---- 入口 ----
 if [ -n "$IPAPPROVE_SELFTEST" ]; then
     ACTION="$1"; shift
+    dbg "cgi enter selftest action=$ACTION ips=$*"
 else
     case "$REQUEST_METHOD" in
         GET|POST) ;;
