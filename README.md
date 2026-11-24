@@ -35,27 +35,26 @@
 
 ## 仓库结构与设备路径
 
-仓库保留脚本、配置模板、控制器、前端与 nali 二进制快照；名单、归属地库等运行时产物不入库。
+仓库目录按设备路径组织：仓库内相对路径即设备绝对路径去掉前导 `/`（如 `etc/ip-approve/` → `/etc/ip-approve/`，`www/` → `/www/`，`usr/share/` → `/usr/share/`）。仓库保留脚本、配置模板、控制器、前端与 nali 二进制快照；名单、归属地库等运行时产物不入库。
 
-| 仓库路径 | 设备路径 | 作用 |
-|---------|---------|------|
-| `approved.conf.example` | `/etc/ip-approve/approved.conf`（权限 600） | 配置模板：钉钉 webhook / 加签、4 个端口变量、QUICK_SECRET / QUICK_URL |
-| `approved-ip-watch.sh` | `/etc/ip-approve/approved-ip-watch.sh` | 监听服务本体：解析探测日志 → pending 集合 + pending.list → 推钉钉 |
-| `refresh-namelist-geo.sh` | `/etc/ip-approve/refresh-namelist-geo.sh` | 遍历 allow / deny 名单重查归属地，刷新注释；先备份、dry-run、flock 原子落盘 |
-| `sync-approve-firewall.sh` | `/etc/ip-approve/sync-approve-firewall.sh` | 各组端口同步 + 缺失集合 / 规则自动重建 |
-| `www/switch.html` | `/www/switch.html` | 面板前端：设备 / 服务开关 + IP 审批 / 黑名单 / 白名单弹层 |
-| `www/cgi-bin/ip-approve` | `/www/cgi-bin/ip-approve` | 审批执行核心 CGI（flock 原子更新底账与 nft 集合） |
-| `usr/share/ucode/luci/controller/admin/ipapprove.uc` | 同路径 | IP 审批接口：POST 写动作、GET 只读列表 |
-| `usr/share/ucode/luci/controller/admin/switchboard.uc` | 同路径 | 开关面板 ubus 代理（白名单对象 / 方法，不开放任意 ubus 调用） |
-| `usr/share/luci/menu.d/luci-app-ipapprove.json` | 同路径 | 审批面板菜单 |
-| `usr/share/luci/menu.d/luci-app-switchboard.json` | 同路径 | 开关面板菜单 |
-| `quick/cgi-bin/ip-approve-quick` | `/www/cgi-bin/ip-approve-quick` | 钉钉按钮免登录验签 CGI |
-| `quick/index.html` | quick 服务目录 | 服务存活占位页 |
-| `cn-ipset/config.yaml` | `/etc/cn-ipset/config.yaml` | nali 运行配置（相对路径库条目） |
-| `cn-ipset/config.yaml.default` | 对照基线 | nali 空目录首次运行落盘的上游默认稿，仅作参考 |
-| `cn-ipset/nali-linux-armv8-<ver>.gz`（+ `.sha256`） | 解压为 `/etc/cn-ipset/nali` | nali 二进制快照 |
-| `cn-ipset/refresh-cn-ipset.sh` | `/etc/cn-ipset/refresh-cn-ipset.sh` | 大陆集合刷新：同步 chnroute{,6} 副本 → `fw4 reload-sets`；副本为空不刷新 |
-| `cn-ipset/refresh-nali-db.sh` | `/etc/cn-ipset/refresh-nali-db.sh` | 归属地 / CDN 库刷新：备份 → `nali update` → 非空校验、异常回滚 → 保留 3 份备份 |
+| 仓库路径（即设备相对路径） | 作用 |
+|---------|------|
+| `etc/ip-approve/approved.conf.example` | 配置模板：钉钉 webhook / 加签、4 个端口变量、QUICK_SECRET / QUICK_URL；复制为 `approved.conf`，权限 600 |
+| `etc/ip-approve/approved-ip-watch.sh` | 监听服务本体：解析探测日志 → pending 集合 + pending.list → 推钉钉 |
+| `etc/ip-approve/sync-approve-firewall.sh` | 各组端口同步 + 缺失集合 / 规则自动重建 |
+| `www/switch.html` | 面板前端：设备 / 服务开关 + IP 审批 / 黑名单 / 白名单弹层 |
+| `www/cgi-bin/ip-approve` | 审批执行核心 CGI（flock 原子更新底账与 nft 集合） |
+| `usr/share/ucode/luci/controller/admin/ipapprove.uc` | IP 审批接口：POST 写动作、GET 只读列表 |
+| `usr/share/ucode/luci/controller/admin/switchboard.uc` | 开关面板 ubus 代理（白名单对象 / 方法，不开放任意 ubus 调用） |
+| `usr/share/luci/menu.d/luci-app-ipapprove.json` | 审批面板菜单 |
+| `usr/share/luci/menu.d/luci-app-switchboard.json` | 开关面板菜单 |
+| `etc/ip-approve/quick/cgi-bin/ip-approve-quick` | 钉钉按钮免登录验签 CGI（quick 服务 uhttpd docroot 下的 cgi-bin） |
+| `etc/ip-approve/quick/index.html` | quick 服务存活占位页 |
+| `etc/cn-ipset/config.yaml` | nali 运行配置（相对路径库条目） |
+| `etc/cn-ipset/config.yaml.default` | nali 空目录首次运行落盘的上游默认稿，仅作对照基线，不部署 |
+| `etc/cn-ipset/nali-linux-armv8-<ver>.gz`（+ `.sha256`） | nali 二进制快照；部署时解压为 `etc/cn-ipset/nali` |
+| `etc/cn-ipset/refresh-cn-ipset.sh` | 大陆集合刷新：同步 chnroute{,6} 副本 → `fw4 reload-sets`；副本为空不刷新 |
+| `etc/cn-ipset/refresh-nali-db.sh` | 归属地 / CDN 库刷新：备份 → `nali update` → 非空校验、异常回滚 → 保留 3 份备份 |
 
 运行时数据（不入库，落在设备）：`pending.list`、`ip-allow{,6}.list`、`ip-deny{,6}.list`、四库（`qqwry.dat` / `ip2region_v4.xdb` / `zxipv6wry.db` / `cdn.yml`）、`chnroute{,6}`、解压后的 nali 二进制。
 
@@ -92,8 +91,6 @@ forward 规则只按端口匹配、不限定目标主机，转发端口应只给
 ```sh
 /etc/ip-approve/approved-ip-watch.sh test <IP>   # 注入测试 IP：进 pending 并推钉钉（用 RFC5737 段，如 203.0.113.50）
 /etc/ip-approve/approved-ip-watch.sh backfill    # 把 nft pending 集合已有 IP 回填 pending.list（不推送）
-/etc/ip-approve/refresh-namelist-geo.sh           # 重查四份名单归属地并刷新注释；默认 dry-run，--apply 落盘（自动备份，保留 3 份）
-/etc/ip-approve/refresh-namelist-geo.sh deny     # 只处理黑名单；allow 同理；CIDR 取网段首地址查询
 ```
 
 ### watch 进程模型
@@ -161,7 +158,7 @@ gzip -N nali-linux-arm64        # 得到 .gz，再对 .gz 生成 .sha256
 
 ```sh
 uname -m                                                        # 应为 aarch64
-# 取仓库内 gz 包到 /etc/cn-ipset/nali.gz（备选 release 资产见 cn-ipset 目录旧包）
+# 取仓库内 gz 包到 /etc/cn-ipset/nali.gz（备选 release 资产见 etc/cn-ipset/ 目录旧包）
 sha256sum /etc/cn-ipset/nali.gz                                 # 可选，对照 .sha256
 gunzip -c /etc/cn-ipset/nali.gz > /etc/cn-ipset/nali
 chmod 755 /etc/cn-ipset/nali
@@ -186,7 +183,7 @@ ls -l /etc/cn-ipset/ip2region_v4.xdb /etc/cn-ipset/qqwry.dat /etc/cn-ipset/zxipv
 
 - **IPv4**：先用 qqwry，未命中再由脚本切到 ip2region 回退；
 - **IPv6**：只用 zxipv6wry；
-- 回退由 watch / 名单脚本在 shell 层用 `NALI_DB_IP4=ip2region` 切库实现。
+- 回退由 watch 脚本在 shell 层用 `NALI_DB_IP4=ip2region` 切库实现。
 
 > 新版 nali 支持逗号并列多库（如 `NALI_DB_IP4=qqwry,ip2region`），单进程内遍历；但并列 JSON 会多出 `results` 数组，现有 sed 提取顶层 `text` 的逻辑需同步改造，故现网仍维持「主库未命中再二次调用回退库」的方式。
 
@@ -216,7 +213,7 @@ NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali --color never -j 2001:4860:4860::8888
 
 ### 地址库刷新（cron）
 
-nali 本身不是守护进程，没有内置定时任务；库刷新由外部 cron 调用 `cn-ipset/refresh-nali-db.sh`，脚本内部再调 `nali update`。设备 crontab：
+nali 本身不是守护进程，没有内置定时任务；库刷新由外部 cron 调用 `etc/cn-ipset/refresh-nali-db.sh`，脚本内部再调 `nali update`。设备 crontab：
 
 ```cron
 30 4 * * * /etc/cn-ipset/refresh-nali-db.sh

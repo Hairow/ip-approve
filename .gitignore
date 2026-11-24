@@ -5,17 +5,17 @@ approved.conf
 *.list
 
 # cn 路由表由 PassWall 数据经 refresh-cn-ipset.sh 定时刷新，不入库
-cn-ipset/chnroute
-cn-ipset/chnroute6
-cn-ipset/.cn-ipset.md5
+etc/cn-ipset/chnroute
+etc/cn-ipset/chnroute6
+etc/cn-ipset/.cn-ipset.md5
 # 离线归属地库由 `nali update` 定时下载，运行时产物不入库
-cn-ipset/qqwry.dat
-cn-ipset/ip2region_v4.xdb
-cn-ipset/zxipv6wry.db
-cn-ipset/cdn.yml
-cn-ipset/backup/
+etc/cn-ipset/qqwry.dat
+etc/cn-ipset/ip2region_v4.xdb
+etc/cn-ipset/zxipv6wry.db
+etc/cn-ipset/cdn.yml
+etc/cn-ipset/backup/
 # nali 解压后的二进制不入库；release gz 包 + .sha256 + config.yaml + config.yaml.default 随仓库入库，部署时解压到 /etc/cn-ipset/nali
-cn-ipset/nali
+etc/cn-ipset/nali
 
 # 备份
 firewall.bak-*
