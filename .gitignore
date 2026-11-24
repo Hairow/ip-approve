@@ -12,6 +12,7 @@ cn-ipset/.cn-ipset.md5
 
 # 备份
 firewall.bak-*
+*.bak
 *.tar.gz
 
 # 系统
