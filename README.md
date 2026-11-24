@@ -38,6 +38,7 @@
 | cn-ipset/qqwry.dat | 离线 IPv4 归属库**首选**（纯真库，运行时数据，不入库） |
 | cn-ipset/ip2region_v4.xdb | 离线 IPv4 归属库**回退**（ip2region，qqwry 未命中时使用，运行时数据，不入库） |
 | cn-ipset/zxipv6wry.db | 离线 IPv6 归属库（ZX，运行时数据，不入库） |
+| cn-ipset/cdn.yml | 离线 CDN 厂商名单（cdn-yml，运行时数据，不入库） |
 | quick/cgi-bin/ip-approve-quick | 钉钉按钮的免登录签名 CGI（HMAC + 30 分钟时效 + pending 校验） |
 | README.md | 本文件 |
 
@@ -56,7 +57,7 @@ cn 集合在路由器上位于 `/etc/cn-ipset/`，本地仓库仅保留刷新脚
 | 解压工具 | `gunzip`（busybox 自带）；校验用 `sha256sum`（可选，设备已自带） |
 | 离线 IPv4 库 | 首选 `/etc/cn-ipset/qqwry.dat`（纯真库），回退 `/etc/cn-ipset/ip2region_v4.xdb`（ip2region） |
 | 离线 IPv6 库 | `/etc/cn-ipset/zxipv6wry.db`（ZX IPv6 库） |
-| 磁盘占用 | gz 包约 3.9MB，解压后二进制约 10.1MB；三库合计约 41MB |
+| 磁盘占用 | gz 包约 3.9MB，解压后二进制约 10.1MB；四库合计约 41MB |
 
 ### 安装步骤（aarch64）
 
@@ -82,11 +83,11 @@ rm -f /etc/cn-ipset/nali.gz
 
 # 5. 放置配置文件到二进制同目录（内容见下节）：/etc/cn-ipset/config.yaml
 
-# 6. 首次拉取三库（之后由 cron 自动更新，见「地址库刷新」一节）
-NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db qqwry,zxipv6wry,ip2region
+# 6. 首次拉取四库（之后由 cron 自动更新，见「地址库刷新」一节）
+NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db qqwry,zxipv6wry,ip2region,cdn
 
-# 7. 确认三库就位
-ls -l /etc/cn-ipset/ip2region_v4.xdb /etc/cn-ipset/qqwry.dat /etc/cn-ipset/zxipv6wry.db
+# 7. 确认四库就位
+ls -l /etc/cn-ipset/ip2region_v4.xdb /etc/cn-ipset/qqwry.dat /etc/cn-ipset/zxipv6wry.db /etc/cn-ipset/cdn.yml
 ```
 ```
 
@@ -150,20 +151,20 @@ NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali -j 2001:4860:4860::8888
 ### 注意事项
 
 - **调用必须带 `NALI_HOME=/etc/cn-ipset`**：不带该变量时 nali 回退到 XDG 默认目录（`~/.config/nali`、`~/.local/share/nali`），找不到 config 与库会尝试联网下载并超时。watch / CGI 封装命令需固定该环境变量。
-- 库缺失时 nali 会尝试按 `download-urls` 联网补下；部署时确保三库已就位，运行期查询保持离线。
+- 库缺失时 nali 会尝试按 `download-urls` 联网补下；部署时确保四库已就位，运行期查询保持离线。
 - IPv6 库（ZX）粒度只到运营商 / 大区，比 IPv4 纯真库粗，属预期。
-- 二进制与库均为运行时产物，默认不入库；随仓库分发的是 gz 包 + `.sha256` + `config.yaml`，解压后的 10MB 二进制与三库在设备上落地。
+- 二进制与库均为运行时产物，默认不入库；随仓库分发的是 gz 包 + `.sha256` + `config.yaml`，解压后的 10MB 二进制与四库在设备上落地。
 
 ### 地址库刷新（cron）
 
 nali 本身不是守护进程，**没有内置定时任务**；库刷新由外部 cron 调用 `nali update` 触发。设备 crontab：
 
 ```cron
-30 4 * * * NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db qqwry,zxipv6wry,ip2region 2>&1 | logger -t nali-update
+30 4 * * * NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db qqwry,zxipv6wry,ip2region,cdn 2>&1 | logger -t nali-update
 ```
 
-- `--db` 按 config 条目名更新：`qqwry` 读 metowolf `download-urls`；`ip2region` 读 v4 拆分库双源（jsDelivr → raw）；`zxipv6wry` 未配源，走 nali 内置 `https://ip.zxinc.org/ip.7z`（下载后解压取 `ipv6wry.db`）。
-- `nali update` 只在执行时拉库，不做版本比对，每次全量下载；三库合计约 41MB，凌晨低峰执行一次。
+- `--db` 按 config 条目名更新：`qqwry` 读 metowolf `download-urls`；`ip2region` 读 v4 拆分库双源（jsDelivr → raw）；`zxipv6wry` 未配源，走 nali 内置 `https://ip.zxinc.org/ip.7z`（下载后解压取 `ipv6wry.db`）；`cdn` 读三源（jsDelivr 4ft35t → raw 4ft35t → raw SukkaLab）。
+- `nali update` 只在执行时拉库，不做版本比对，每次全量下载；四库合计约 41MB（`cdn.yml` 仅约 26KB），凌晨低峰执行一次。
 - 已知短板（v0.8.1）：写入为「先删旧库再直写目标文件」，非原子；ip2region 条目不做内容校验（qqwry / zx 有内置 CheckFile）；HTTP 无重试、超时固定（全局 60s、TLS 握手 5s），qqwry 约 27MB 偶发读 body 超时。断电/中断/超时不会覆盖通过校验的旧库，下次 cron 重试即可。
 
 ## 服务操作（用 init 脚本，不要裸跑脚本本体）
