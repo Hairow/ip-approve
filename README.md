@@ -1,71 +1,151 @@
-# /etc/ip-approve — IP 审批防火墙体系
+# ip-approve — 路由器 IP 审批防火墙体系
 
-对 4 组审批端口（见 approved.conf 的 INPUT_APPROVE_PORT4/6、FORWARD_APPROVE_PORT4/6）做「先探测进 pending → 钉钉推送 → 手机一键批准/拒绝」的动态放行体系。**每种情况（input/forward × v4/v6）固定 5 条防火墙规则**（allow → deny → cn-gate → pending → probe-log），见下文「防火墙规则结构」。
+对暴露在公网的审批端口做「探测进 pending → 钉钉推送 → 一键批准 / 拒绝」的动态放行体系。未列名的新来源先进入待审批队列，批准后写入白名单永久放行，拒绝则进入黑名单静默丢弃；未列名的境外来源在国籍网关直接丢弃，不进审核。
 
-## 前置条件
+- 运行环境：OpenWrt / iStoreOS（fw4 + nftables），设备架构 aarch64
+- 规则规模：input / forward × IPv4 / IPv6 共 **4 组**，每组固定 **5 条**规则（allow → deny → cn-gate → pending → probe-log）
+- 三条入口共用同一套审批核心：LuCI 面板、钉钉按钮免登 CGI、CLI / 脚本
+
+## 工作链路
+
+```
+公网探测审批端口
+  → fw4 probe-log 写内核日志
+  → approved-ip-watch 抓取日志 → 写入 nft pending 集合 + pending.list → 推钉钉 actionCard
+  → 手机点「批准 / 拒绝」
+      → Tailscale Funnel 443 → 127.0.0.1:50080（uhttpd）
+      → ip-approve-quick 验签（HMAC + 30 分钟时效 + pending 校验）
+      → 写 allow / deny 名单与 nft 集合，即时生效
+```
+
+无 Tailscale / 无 QUICK_SECRET 时退回纯文本推送，核心审批链（探测 → pending → 面板手动批准 / 拒绝）不受影响。
+
+## 前置依赖
 
 | 依赖 | 用途 | 必需性 |
 |------|------|--------|
-| OpenWrt/iStoreOS（fw4 + nftables） | 防火墙规则与 ipset 集合 | 必需 |
-| LuCI + rpcd | 审批面板（ipapprove.uc 控制器 + menu.d 菜单）、switch.html 走自建 switchboard 控制器 | 必需（面板部分） |
-| `/www/cgi-bin/ip-approve` | 实际执行批准/拒绝/黑名单移除/白名单移除（写 nft + 名单文件），并提供 pending/黑名单/白名单只读查询；LuCI 与钉钉链路共用 | 必需 |
-| ucode（luci.controller 框架） | ipapprove.uc 面板接口 | 必需（面板部分） |
-| openssl | HMAC-SHA256 签名/验签（钉钉加签 + 快捷链接） | 必需 |
+| OpenWrt / iStoreOS（fw4 + nftables） | 防火墙规则与集合 | 必需 |
+| LuCI + rpcd + ucode | 面板控制器与开关接口会话鉴权 | 必需（面板部分） |
+| `www/cgi-bin/ip-approve` | 批准 / 拒绝 / 移除黑白名单，写 nft + 名单文件；提供 pending / 黑白名单只读查询 | 必需 |
+| openssl | HMAC-SHA256 签名 / 验签（钉钉加签 + 快捷链接） | 必需 |
 | busybox curl | 推送钉钉 | 必需 |
-| busybox logread -f | watch 服务监听内核防火墙日志抓探测源 | 必需 |
-| Tailscale（tailscaled，已开 MagicDNS + HTTPS 证书） | Funnel 公网入口 `https://<域名>:443 → 127.0.0.1:50080` | 可选（钉钉一键审批需要） |
-| 钉钉群机器人（自定义 webhook + 加签密钥） | 待审批通知与 actionCard 按钮 | 可选（推送通道） |
+| busybox `logread -f` | watch 服务跟踪内核防火墙日志 | 必需 |
+| Tailscale（tailscaled，MagicDNS + HTTPS 证书） | Funnel 公网入口 `https://<域名>:443 → 127.0.0.1:50080` | 可选（一键审批需要） |
+| 钉钉群机器人（webhook + 加签密钥） | 待审批通知与 actionCard 按钮 | 可选（推送通道） |
 
-注：无 QUICK_URL/QUICK_SECRET 或无 Tailscale 时，核心审批链（探测→pending→面板手动批准/拒绝）不受影响，仅失去钉钉一键审批。
+## 仓库结构与设备路径
 
-## 目录结构
+仓库保留脚本、配置模板、控制器、前端与 nali 二进制快照；名单、归属地库等运行时产物不入库。
 
-| 文件/目录 | 作用 |
-|-----------|------|
-| approved.conf | 配置：钉钉 webhook/加签密钥、4 个端口变量（INPUT/FORWARD_APPROVE_PORT4/6）、QUICK_SECRET、QUICK_URL |
-| pending.list | 待审批 IP 队列（IP + 时间 + 端口 + 归属地）；审批落定时归属地以 `#` 注释行转入 allow/deny 名单 |
-| switch.html | 面板：设备/WAN/磁盘/服务开关 + IP 审批弹层 + 黑名单弹层（unban）+ 白名单弹层（unallow） |
-| ip-allow.list / ip-allow6.list | 批准名单（写入 nft ip_allow / ip_allow6）；每行一个纯 IP/CIDR，紧随一行 `# <ip> <归属地>` 注释（loadfile 与列表展示均跳过注释）；unallow 时正文行与注释行一并删除 |
-| ip-deny.list / ip-deny6.list | 拒绝名单（写入 nft ip_deny / ip_deny6）；格式同上，带 `# <ip> <归属地>` 注释行；unban 时正文行与注释行一并删除 |
-| cgi-bin/ip-approve | 审批执行核心（路由器上位于 /www/cgi-bin/ip-approve）：flock 原子更新 pending/allow/deny 底账与 nft 集合，面板/钉钉/CLI 三入口共用 |
-| approved-ip-watch.sh | 监听服务本体：解析探测日志 → nft pending 集合 + pending.list → 推钉钉 |
-| sync-approve-firewall.sh | 同步/重建防火墙：各组端口同步 + 缺失 ipset/规则自动重建（改端口变量后运行） |
-| refresh-namelist-geo.sh | 名单归属地维护：逐条 nali 重查 allow/deny 条目并覆盖刷新归属地注释；先备份、dry-run 预览、落盘 flock 原子替换 |
-| cn-ipset/refresh-cn-ipset.sh | 大陆集合刷新脚本：从 PassWall 规则同步 chnroute{,6} 副本 → `fw4 reload-sets`；副本为空则不刷新，避免集合被刷空导致全挡 |
-| cn-ipset/refresh-nali-db.sh | 归属地/CDN 库刷新脚本：先备份四库 → `nali update` → 非空校验、异常自动回滚 → 保留最近 3 份备份 |
-| cn-ipset/config.yaml | nali 运行配置：基于上游 default 全量条目，库文件均为相对路径；qqwry 指向 metowolf 源，ip2region 回退库用 v4 拆分双源；通过 `NALI_HOME=/etc/cn-ipset` 加载 |
-| cn-ipset/config.yaml.default | nali v0.8.1 首次运行自动生成的上游默认配置基线（全部内置条目 + 默认下载源），仅作对照参考；设备实际使用 `config.yaml` |
-| cn-ipset/nali-linux-armv8-`<ver>`.gz (+ `.sha256`) | nali 二进制压缩包随仓库入库；设备上解压为 `/etc/cn-ipset/nali`。当前运行 `v0.8.1-13-g1651b7a`（本地交叉编译 master `1651b7a`）；`v0.8.1` release 包留档可回退 |
-| cn-ipset/chnroute / chnroute6 | 大陆 IPv4/IPv6 路由表副本（运行时数据，不入库；远端位于 /etc/cn-ipset/） |
-| cn-ipset/qqwry.dat | 离线 IPv4 归属库**首选**（纯真库，运行时数据，不入库） |
-| cn-ipset/ip2region_v4.xdb | 离线 IPv4 归属库**回退**（ip2region，qqwry 未命中时使用，运行时数据，不入库） |
-| cn-ipset/zxipv6wry.db | 离线 IPv6 归属库（ZX，运行时数据，不入库） |
-| cn-ipset/cdn.yml | 离线 CDN 厂商名单（cdn-yml，运行时数据，不入库） |
-| quick/cgi-bin/ip-approve-quick | 钉钉按钮的免登录签名 CGI（HMAC + 30 分钟时效 + pending 校验） |
-| README.md | 本文件 |
+| 仓库路径 | 设备路径 | 作用 |
+|---------|---------|------|
+| `approved.conf.example` | `/etc/ip-approve/approved.conf`（权限 600） | 配置模板：钉钉 webhook / 加签、4 个端口变量、QUICK_SECRET / QUICK_URL |
+| `approved-ip-watch.sh` | `/etc/ip-approve/approved-ip-watch.sh` | 监听服务本体：解析探测日志 → pending 集合 + pending.list → 推钉钉 |
+| `refresh-namelist-geo.sh` | `/etc/ip-approve/refresh-namelist-geo.sh` | 遍历 allow / deny 名单重查归属地，刷新注释；先备份、dry-run、flock 原子落盘 |
+| `sync-approve-firewall.sh` | `/etc/ip-approve/sync-approve-firewall.sh` | 各组端口同步 + 缺失集合 / 规则自动重建 |
+| `www/switch.html` | `/www/switch.html` | 面板前端：设备 / 服务开关 + IP 审批 / 黑名单 / 白名单弹层 |
+| `www/cgi-bin/ip-approve` | `/www/cgi-bin/ip-approve` | 审批执行核心 CGI（flock 原子更新底账与 nft 集合） |
+| `usr/share/ucode/luci/controller/admin/ipapprove.uc` | 同路径 | IP 审批接口：POST 写动作、GET 只读列表 |
+| `usr/share/ucode/luci/controller/admin/switchboard.uc` | 同路径 | 开关面板 ubus 代理（白名单对象 / 方法，不开放任意 ubus 调用） |
+| `usr/share/luci/menu.d/luci-app-ipapprove.json` | 同路径 | 审批面板菜单 |
+| `usr/share/luci/menu.d/luci-app-switchboard.json` | 同路径 | 开关面板菜单 |
+| `quick/cgi-bin/ip-approve-quick` | `/www/cgi-bin/ip-approve-quick` | 钉钉按钮免登录验签 CGI |
+| `quick/index.html` | quick 服务目录 | 服务存活占位页 |
+| `cn-ipset/config.yaml` | `/etc/cn-ipset/config.yaml` | nali 运行配置（相对路径库条目） |
+| `cn-ipset/config.yaml.default` | 对照基线 | nali 空目录首次运行落盘的上游默认稿，仅作参考 |
+| `cn-ipset/nali-linux-armv8-<ver>.gz`（+ `.sha256`） | 解压为 `/etc/cn-ipset/nali` | nali 二进制快照 |
+| `cn-ipset/refresh-cn-ipset.sh` | `/etc/cn-ipset/refresh-cn-ipset.sh` | 大陆集合刷新：同步 chnroute{,6} 副本 → `fw4 reload-sets`；副本为空不刷新 |
+| `cn-ipset/refresh-nali-db.sh` | `/etc/cn-ipset/refresh-nali-db.sh` | 归属地 / CDN 库刷新：备份 → `nali update` → 非空校验、异常回滚 → 保留 3 份备份 |
 
-cn 集合在路由器上位于 `/etc/cn-ipset/`，本地仓库仅保留刷新脚本，路由表数据由脚本定时拉取、不入库。
+运行时数据（不入库，落在设备）：`pending.list`、`ip-allow{,6}.list`、`ip-deny{,6}.list`、四库（`qqwry.dat` / `ip2region_v4.xdb` / `zxipv6wry.db` / `cdn.yml`）、`chnroute{,6}`、解压后的 nali 二进制。
 
-## nali 归属地查询（安装与依赖）
+## 配置：`approved.conf`
 
-`nali` 是离线 IP 归属地查询命令行工具（Go 编写），用于在钉钉推送 / 审批列表里显示来源 IP 的省市与运营商。查询完全离线，不依赖在线接口。
+由 `approved.conf.example` 复制后按实际填写，权限 600（含密钥）。
 
-### 依赖
+| 变量 | 作用 |
+|------|------|
+| `DING_WEBHOOK` | 钉钉机器人 webhook（含 access_token）；留空或只有前缀则不推送 |
+| `DING_SECRET` | 钉钉加签密钥（`SEC` 开头） |
+| `INPUT_APPROVE_PORT4` | 外网 → 路由器本机（v4）审批端口，空格分隔；留空 = 不创建该组规则 |
+| `INPUT_APPROVE_PORT6` | 外网 → 路由器本机（v6）审批端口 |
+| `FORWARD_APPROVE_PORT4` | 外网 → lan 转发（v4）审批端口 |
+| `FORWARD_APPROVE_PORT6` | 外网 → lan 转发（v6，fnOS Web）审批端口 |
+| `QUICK_SECRET` | 32 位 hex，watch 签名与 CGI 验签必须一致 |
+| `QUICK_URL` | 公网入口域名（Tailscale Funnel）；留空则推送退回纯文本 |
 
-| 项 | 说明 |
-|----|------|
-| CPU 架构 | 设备为 **aarch64（arm64 / armv8）**，对应 release 资产 `nali-linux-armv8`；换其他架构需选用对应资产（amd64 / armv7 / mips 等），先 `uname -m` 确认 |
-| 动态链接 | **无额外运行库依赖**，静态编译二进制，musl / glibc 均可运行；不需要 opkg 安装任何包 |
-| 解压工具 | `gunzip`（busybox 自带）；校验用 `sha256sum`（可选，设备已自带） |
-| 离线 IPv4 库 | 首选 `/etc/cn-ipset/qqwry.dat`（纯真库），回退 `/etc/cn-ipset/ip2region_v4.xdb`（ip2region） |
-| 离线 IPv6 库 | `/etc/cn-ipset/zxipv6wry.db`（ZX IPv6 库） |
-| 磁盘占用 | gz 包约 3.8MB，解压后二进制约 9.3MB；四库合计约 41MB |
+forward 规则只按端口匹配、不限定目标主机，转发端口应只给单一目标服务使用。
 
-### 安装步骤（aarch64）
+## 服务运维
 
-当前设备运行的是本地交叉编译的 master 版本 `v0.8.1-13-g1651b7a`（源码 `github.com/zu1k/nali`，commit `1651b7a`），仓库内随附其 gz 包与 `.sha256`；旧 release `v0.8.1` 包同目录留档，可回退。
+用 init 脚本管理，不要裸跑脚本本体：
 
-交叉编译（Go ≥ 1.26；纯 Go、`CGO_ENABLED=0` 静态链接，无需目标机 gcc）：
+```sh
+/etc/init.d/approved-ip-watch start|stop|restart|enable|disable   # 监听推送服务
+/etc/init.d/ipapprove-http    start|stop|restart|enable|disable   # 50080 签名 CGI 服务（uhttpd）
+```
+
+两个服务均已 enable 开机自启（S99）。裸跑 `approved-ip-watch.sh`（不带参数）会进前台主循环，与 procd 实例冲突，禁止。
+
+### 手动维护命令
+
+```sh
+/etc/ip-approve/approved-ip-watch.sh test <IP>   # 注入测试 IP：进 pending 并推钉钉（用 RFC5737 段，如 203.0.113.50）
+/etc/ip-approve/approved-ip-watch.sh backfill    # 把 nft pending 集合已有 IP 回填 pending.list（不推送）
+/etc/ip-approve/refresh-namelist-geo.sh           # 重查四份名单归属地并刷新注释；默认 dry-run，--apply 落盘（自动备份，保留 3 份）
+/etc/ip-approve/refresh-namelist-geo.sh deny     # 只处理黑名单；allow 同理；CIDR 取网段首地址查询
+```
+
+### watch 进程模型
+
+单实例由 pidfile + `kill_tree` 保证。运行时进程树：
+
+```
+主 shell（pidfile 所有者，procd 拉起）
+└─ 后台子 shell（日志跟踪循环）
+    ├─ logread -f        # 管道左端，跟随内核日志
+    └─ while-read 子 shell # 管道右端，解析日志、调 by_type → new_ip
+```
+
+重启时旧进程树（主 → 子 shell → 管道孙进程）被整棵清理；三个 sh 合计 RSS 约 3MB，无常驻 nali（查询进程用完即退）。
+
+## 防火墙规则结构
+
+4 组（input v4 / input v6 / forward v4 / forward v6）结构完全同构，仅名字前缀（`ip4-` / `ip6-` / `forward-ip4-` / `forward-ip6-`）和集合后缀不同。fw4 按 UCI 段顺序进链，链内顺序固定：
+
+| 顺序 | 规则 | 匹配 | 动作 | 作用 |
+|------|------|------|------|------|
+| 1 | `<前缀>-allow-accept` | 源 ∈ ip_allow 集合 | accept | 已批准名单放行（allow 优先于 deny） |
+| 2 | `<前缀>-deny-drop` | 源 ∈ ip_deny 集合 | drop | 已拒绝名单拦截，静默丢弃 |
+| 3 | `cn-gate-<前缀>` | 源 ∉ cn_ipv4 / cn_ipv6 集合 | drop | 未列名的境外源直接丢弃，不进审核、不记日志 |
+| 4 | `<前缀>-pending-reject` | 源 ∈ ip_pending 集合 | reject | 审批中的重复探测，静默拒绝（watch 去重，不重复推送） |
+| 5 | `<前缀>-probe-log` | 其余国内来源（无集合匹配） | log + reject | **新探测源发现**：写内核日志（前缀如 `ip4-probe-log: `），watch 抓取 → pending → 推钉钉 |
+
+要点：
+
+- **allow 优先于 deny**：同一 IP 同时在 allow 与 deny 时按 allow 放行；cn-gate 在白 / 黑名单之后，allow 里的海外地址可豁免国籍校验，deny 里的海外地址仍被第 2 条拦截。
+- **cn-gate 只兜底未列名的境外新源**：大陆集合由 `refresh-cn-ipset.sh` 维护并保证非空；gate 静默 DROP，不写日志、不进 pending、不推钉钉。
+- 第 5 条的拦截动作与 zone 默认拒绝相同，纯粹为写日志；不重开 wan zone 全量日志（历史上曾因此产生 pending 污染）。
+- **probe-log 是全系统唯一日志源**：allow / deny / gate / pending 规则均静默。
+- input 组只匹配目标为路由器本机（input_wan 链）；forward 组匹配 wan→lan 转发（forward_wan 链）；tailscale 是独立 zone，与 wan 审批链互不到达。
+- **回程与已建连不会被误匹配**：fw4 在跳进 zone 链前已先行放行 established/related，回程包到不了审批规则；回程 dport 是临时端口，也与审批端口对不上。已知缝隙：invalid / untracked 报文仍可能落到 zone 链被评估。
+- 日志前缀取自规则名，watch 用泛匹配 `*pending-reject*` / `*probe-log*` 兜住所有前缀。
+- 端口变量留空 = 整组移除，流量走 zone 默认拒绝且不可审批；改完端口运行 `sync-approve-firewall.sh`。
+
+### fnOS 转发审批组
+
+fnOS Web（5666 / 5667）是 forward 组当前使用者，随 `FORWARD_APPROVE_PORT6` 启停；cn 白名单规则已移除，所有来源统一走审批。批准后来源进入 ip_allow6，后续访问由第 2 条规则直接放行。
+
+## nali 归属地查询
+
+`nali` 是离线 IP 归属地查询命令行工具（Go 编写），在钉钉推送 / 审批列表显示来源 IP 的省市与运营商。查询完全离线，不依赖在线接口。
+
+### 版本与编译
+
+当前设备运行本地交叉编译的 master 版本 **`v0.8.1-13-g1651b7a`**（源码 `github.com/zu1k/nali`，commit `1651b7a`）；仓库内随附其 gz 包与 `.sha256`，旧 release `v0.8.1` 包同目录留档可回退。
+
+- 设备为 aarch64（arm64 / armv8）；纯 Go、`CGO_ENABLED=0` 静态链接，无运行库依赖，musl / glibc 均可运行，不需要目标机 gcc。
+- 编译需 Go ≥ 1.26：
 
 ```sh
 cd nali-src
@@ -77,187 +157,81 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 GOPROXY=https://goproxy.cn,direct \
 gzip -N nali-linux-arm64        # 得到 .gz，再对 .gz 生成 .sha256
 ```
 
-部署到设备（aarch64）：
+### 部署到设备（aarch64）
 
 ```sh
-# 1. 确认架构（应为 aarch64）
-uname -m
-
-# 2. 取仓库内 gz 包到目标目录（包名 nali-linux-armv8-v0.8.1-13-g1651b7a.gz）
-#    备选 release 资产：
-#    https://github.com/zu1k/nali/releases/download/v0.8.1/nali-linux-armv8-v0.8.1.gz
-
-# 3.（可选）对照 .sha256 校验完整性
-sha256sum /etc/cn-ipset/nali.gz
-
-# 4. 解压为二进制并赋可执行权限
+uname -m                                                        # 应为 aarch64
+# 取仓库内 gz 包到 /etc/cn-ipset/nali.gz（备选 release 资产见 cn-ipset 目录旧包）
+sha256sum /etc/cn-ipset/nali.gz                                 # 可选，对照 .sha256
 gunzip -c /etc/cn-ipset/nali.gz > /etc/cn-ipset/nali
 chmod 755 /etc/cn-ipset/nali
 rm -f /etc/cn-ipset/nali.gz
-
-# 5. 放置配置文件到二进制同目录（内容见下节）：/etc/cn-ipset/config.yaml
-
-# 6. 首次拉取四库（之后由 cron 自动更新，见「地址库刷新」一节）
+# 首次拉取四库（之后由 cron 自动更新）
 NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db qqwry,zxipv6wry,ip2region,cdn
-
-# 7. 确认四库就位
 ls -l /etc/cn-ipset/ip2region_v4.xdb /etc/cn-ipset/qqwry.dat /etc/cn-ipset/zxipv6wry.db /etc/cn-ipset/cdn.yml
 ```
-```
 
-### 配置
+磁盘占用：gz 包约 3.8MB，解压后二进制约 9.3MB；四库合计约 41MB（`cdn.yml` 仅约 26KB）。
 
-通过环境变量指定配置目录与数据目录，让它们都落在二进制同目录 `/etc/cn-ipset/`：
+### 配置与查询优先级
 
-- `NALI_HOME=/etc/cn-ipset`：**配置目录与数据目录都指向该目录**（最简便，本项目采用）；
-- 或分开指定：`NALI_CONFIG_HOME`（配置目录）、`NALI_DB_HOME`（库目录）。
+通过环境变量指定目录，配置与库都落在二进制同目录 `/etc/cn-ipset/`：
 
-`config.yaml.default` 是 nali 在空目录首次运行时自动落盘的上游默认稿（相对路径、内置全部条目与默认源）；仓库内 `config.yaml` 保留 default 全量条目，库文件均为相对路径（相对 `NALI_HOME` 解析）。偏离两处：qqwry 下载源换为 metowolf；ip2region 回退库文件名随拆分改为 `ip2region_v4.xdb`、下载源换为可达的 v4 拆分库双源（default 内置的旧 `ip2region.xdb` 路径在 master 已失效）。
+- `NALI_HOME=/etc/cn-ipset`：配置目录与数据目录都指向该目录（本项目采用）；
+- 或分开指定 `NALI_CONFIG_HOME`、`NALI_DB_HOME`。
 
-配置文件名固定为 `<配置目录>/config.yaml`。关键三条（其余条目同 default 基线）：
+`config.yaml` 保留上游 default 全量条目，库文件均为相对路径（相对 `NALI_HOME` 解析）。两处偏离：qqwry 下载源换为 metowolf；ip2region 回退库文件名随拆分改为 `ip2region_v4.xdb`，下载源换为可达的 v4 拆分双源。
 
-```yaml
-databases:
-    - name: qqwry
-      format: qqwry
-      file: qqwry.dat
-      types:
-        - IPv4
-      download-urls:
-        - "https://github.com/metowolf/qqwry.dat/releases/latest/download/qqwry.dat"
-    - name: ip2region
-      format: ip2region
-      file: ip2region_v4.xdb
-      types:
-        - IPv4
-      download-urls:
-        - "https://cdn.jsdelivr.net/gh/lionsoul2014/ip2region@master/data/ip2region_v4.xdb"
-        - "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb"
-    - name: zxipv6wry
-      format: zxipv6wry
-      file: zxipv6wry.db
-      types:
-        - IPv6
-selected:
-    ipv4: qqwry
-    ipv6: zxipv6wry
-    lang: zh-CN
-```
+查询优先级：
 
-查询优先级：**IPv4 先用 qqwry，未命中再回退 ip2region**；IPv6 只用 zxipv6wry。回退由 watch 脚本在 shell 层用 `NALI_DB_IP4=ip2region` 切库实现（v0.8.1 不支持单库条目内多库并列）。
+- **IPv4**：先用 qqwry，未命中再由脚本切到 ip2region 回退；
+- **IPv6**：只用 zxipv6wry；
+- 回退由 watch / 名单脚本在 shell 层用 `NALI_DB_IP4=ip2region` 切库实现。
+
+> 新版 nali 支持逗号并列多库（如 `NALI_DB_IP4=qqwry,ip2region`），单进程内遍历；但并列 JSON 会多出 `results` 数组，现有 sed 提取顶层 `text` 的逻辑需同步改造，故现网仍维持「主库未命中再二次调用回退库」的方式。
 
 ### 验证
 
 ```sh
-# 必须带 NALI_HOME，让 nali 从同目录读 config 与库
+# 必须带 NALI_HOME；脚本调用固定带 --color never，避免 ANSI 色码混入 JSON / 文本
 # IPv4（默认 qqwry）：text 形如 中国–山东–烟台 电信
-NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali -j 113.124.101.115
+NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali --color never -j 113.124.101.115
 
 # IPv4 回退库 ip2region（切库）：text 形如 中国|山东省|烟台市|电信|CN
-NALI_HOME=/etc/cn-ipset NALI_DB_IP4=ip2region /etc/cn-ipset/nali -j 113.124.101.115
+NALI_HOME=/etc/cn-ipset NALI_DB_IP4=ip2region /etc/cn-ipset/nali --color never -j 113.124.101.115
 
 # IPv6（zxipv6wry）
-NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali -j 2001:4860:4860::8888
+NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali --color never -j 2001:4860:4860::8888
 ```
 
-`-j` 输出 JSON，一行一条，便于脚本解析；关键字段：`info.country`（国家/省/市）、`info.area`（运营商/网段）。支持一次传多个 IP 批量查询，每行一条 JSON。
+`-j` 输出 JSON，一行一条；关键字段 `info.country`（国家 / 省 / 市）、`info.area`（运营商 / 网段）。支持一次传多个 IP 批量查询，每行一条 JSON。
 
 ### 注意事项
 
-- **调用必须带 `NALI_HOME=/etc/cn-ipset`**：不带该变量时 nali 回退到 XDG 默认目录（`~/.config/nali`、`~/.local/share/nali`），找不到 config 与库会尝试联网下载并超时。watch / CGI 封装命令需固定该环境变量。
-- 库缺失时 nali 会尝试按 `download-urls` 联网补下；部署时确保四库已就位，运行期查询保持离线。
+- **调用必须带 `NALI_HOME=/etc/cn-ipset`**：不带时 nali 回退 XDG 默认目录（`~/.config/nali`、`~/.local/share/nali`），找不到 config 与库会尝试联网下载并超时。watch / CGI 封装命令需固定该变量。
+- 库缺失时 nali 会按 `download-urls` 联网补下；部署时确保四库就位，运行期查询保持离线。
+- Linux 下库文件 mmap 按需缺页载入，不整库读入堆；单次查询进程驻留约 12MB，退出即释放。
 - IPv6 库（ZX）粒度只到运营商 / 大区，比 IPv4 纯真库粗，属预期。
-- 二进制与库均为运行时产物，默认不入库；随仓库分发的是 gz 包 + `.sha256` + `config.yaml`，解压后的约 9.3MB 二进制与四库在设备上落地。
+- 二进制与库均为运行时产物，默认不入库；随仓库分发的是 gz 包 + `.sha256` + `config.yaml`。
 
 ### 地址库刷新（cron）
 
-nali 本身不是守护进程，**没有内置定时任务**；库刷新由外部 cron 调用包装脚本 `cn-ipset/refresh-nali-db.sh` 触发（脚本内部再调 `nali update`）。设备 crontab：
+nali 本身不是守护进程，没有内置定时任务；库刷新由外部 cron 调用 `cn-ipset/refresh-nali-db.sh`，脚本内部再调 `nali update`。设备 crontab：
 
 ```cron
 30 4 * * * /etc/cn-ipset/refresh-nali-db.sh
 ```
 
-脚本流程：**先备份现有四库 → 调 `nali update` 刷新 → 逐库校验（存在且非空）→ 缺失/空文件自动从本次备份回滚 → 清理旧备份**。
+脚本流程：先备份现有四库 → `nali update` 刷新 → 逐库校验（存在且非空）→ 缺失 / 空文件自动从本次备份回滚 → 清理旧备份。
 
-- 备份目录 `/etc/cn-ipset/backup/<YYYYmmdd-HHMMSS>/`，`latest` 软链指向最近一次；仅保留最近 3 份，更早的自动删除。
-- `--db` 按 config 条目名更新：`qqwry` 读 metowolf `download-urls`；`ip2region` 读 v4 拆分库双源（jsDelivr → raw）；`zxipv6wry` 未配源，走 nali 内置 `https://ip.zxinc.org/ip.7z`（下载后解压取 `ipv6wry.db`）；`cdn` 读三源（jsDelivr 4ft35t → raw 4ft35t → raw SukkaLab）。
-- `nali update` 只在执行时拉库，不做版本比对，每次全量下载；四库合计约 41MB（`cdn.yml` 仅约 26KB），凌晨低峰执行一次。
-- 已知短板（v0.8.1）：写入为「先删旧库再直写目标文件」，非原子；ip2region 条目不做内容校验（qqwry / zx 有内置 CheckFile）；HTTP 无重试、超时固定（全局 60s、TLS 握手 5s），qqwry 约 27MB 偶发读 body 超时。包装脚本以「非空」作兜底校验，落成空文件会自动回滚到备份；但非空的内容损坏仍需人工核对，下次 cron 重试即可。
-
-## 服务操作（用 init 脚本，不要裸跑脚本本体）
-
-```
-/etc/init.d/approved-ip-watch start|stop|restart|enable|disable   # 监听推送服务
-/etc/init.d/ipapprove-http    start|stop|restart|enable|disable   # 50080 签名 CGI 服务（uhttpd）
-```
-
-两个服务均已 enable 开机自启（S99）。裸跑 approved-ip-watch.sh（不带参数）会进前台主循环并和 procd 实例打架，禁止。
-
-## 手动维护命令（脚本本体）
-
-```
-/etc/ip-approve/approved-ip-watch.sh test <IP>     # 注入测试 IP：进 pending 并推钉钉（用 RFC5737 段，如 203.0.113.50）
-/etc/ip-approve/approved-ip-watch.sh backfill      # 把 nft pending 集合已有 IP 回填 pending.list（不推送）
-/etc/ip-approve/refresh-namelist-geo.sh             # 遍历 allow/deny 四份名单，nali 重查归属地并覆盖刷新 `# <ip> <geo>` 注释；默认 dry-run，加 --apply 落盘（落盘前自动备份到 backup/geo-<时间戳>/，保留最近 3 份）
-/etc/ip-approve/refresh-namelist-geo.sh deny        # 只处理黑名单；allow 同理；CIDR 取网段首地址查询
-```
-
-## 钉钉推送链路
-
-```
-探测审批端口 → approved-ip-watch 写 pending + 推 actionCard（IP+时间+批准/拒绝按钮）
-→ 公网 https://istoreos.tailaf168e.ts.net (Tailscale Funnel 443)
-→ 127.0.0.1:50080 (uhttpd -f，procd 管理)
-→ quick/cgi-bin/ip-approve-quick 验签 → 执行 → 即时生效
-```
-
-- Funnel 在路由器上用 `tailscale funnel --bg 50080` 设置，重启后应仍在，失效时重跑该命令
-- 按钮链接域名取自 QUICK_URL；清空 QUICK_URL 或 QUICK_SECRET 自动退回纯文本推送
-- 已处理 IP 再点旧按钮会显示「已被批准/拒绝」
-
-## 防火墙规则结构（每组固定 5 条）
-
-4 组规则（input v4 / input v6 / forward v4 / forward v6）结构完全同构，每条只差名字前缀（ip4- / ip6- / forward-ip4- / forward-ip6-）和引用的 ipset（v4 组用 ip_allow/ip_deny/ip_pending/cn_ipv4，v6 组用 *6 后缀）。fw4 按 UCI 段顺序进链，链内顺序固定：
-
-| 顺序 | 规则 | 匹配 | 动作 | 作用 |
-|------|------|------|------|------|
-| 1 | `<前缀>-allow-accept` | 源 ∈ ip_allow 集合 | accept | 已批准名单放行（allow 优先于 deny） |
-| 2 | `<前缀>-deny-drop` | 源 ∈ ip_deny 集合 | drop | 已拒绝名单拦截，静默丢弃 |
-| 3 | `cn-gate-<前缀>` | 源 ∉ cn_ipv4/cn_ipv6 集合 | drop | 未列名的国外源直接丢弃，不进审核、不记日志 |
-| 4 | `<前缀>-pending-reject` | 源 ∈ ip_pending 集合 | reject | 审批中的重复探测，静默拒绝（watch 去重，不重复推送） |
-| 5 | `<前缀>-probe-log` | 其余国内来源（无集合匹配） | log + reject | **新探测源发现**：写内核日志（前缀如 `ip4-probe-log: `），watch 抓取 → 进 pending → 推钉钉 |
-
-要点：
-
-- **allow 优先于 deny**：名单冲突（同一 IP 同时在 allow 与 deny）时按 allow 放行；cn-gate 排在白/黑名单之后，allow 里的海外地址可豁免国籍校验，deny 里的海外地址仍被第 2 条拦截
-- **cn-gate 只兜底未列名的国外新源**：大陆集合 `cn_ipv4`/`cn_ipv6` 由 `/etc/cn-ipset/refresh-cn-ipset.sh` 维护并保证非空；gate 静默 DROP，不写日志、不进 pending、不推钉钉
-- 第 5 条的拦截动作与 zone 默认拒绝相同，纯粹为写日志；不重开 wan zone 全量日志（历史上曾因此产生 pending 污染）
-- **probe-log 是全系统唯一的日志源**：allow/deny/gate/pending 规则均静默（allow/deny 无需记录，gate 不保留海外痕迹，pending 的重复探测由 watch 去重，日志无用途）
-- input 组规则只匹配目标=路由器本机（input_wan 链）；forward 组匹配 wan→lan 转发流量（forward_wan 链）；tailscale 是独立 zone（`input_tailscale`/`forward_tailscale`），与 wan 审批链互不到达
-- **回程与已建连不会被审批组误匹配**：fw4 基础链在跳进 zone 链（input_wan/forward_wan）之前，已对 established/related 报文先行放行，回程包到不了审批规则；且回程报文的 dport 是对端分配的临时端口，也与审批端口对不上。已知缝隙：invalid/untracked 状态报文仍可能落到 zone 链被评估
-- 日志前缀由 fw4 取自规则名，watch 用泛匹配 `*pending-reject*` / `*probe-log*` 兜住所有前缀
-- 组随对应端口变量启停：留空 = 整组移除，流量走 zone 默认拒绝且不可审批
-
-## fnOS 转发审批组
-
-fnOS Web（5666/5667）是 forward 组的当前使用者，随 FORWARD_APPROVE_PORT6 启停；cn 白名单规则 Allow-fnos-Web6 已移除（所有来源统一走审批）。批准后来源进入 ip_allow6，后续访问由第 2 条规则直接放行。
-
-## 端口配置（input / forward 分开管理）
-
-approved.conf 里 4 个端口变量，各自独立、均可留空（留空 = 该组不创建审批规则，已存在的自动移除，流量走 wan 兜底拒绝）：
-
-| 变量 | 作用 | 规则组 |
-|------|------|--------|
-| INPUT_APPROVE_PORT4 | 外网→路由器本机 (v4) | ip4-allow-accept / ip4-deny-drop / cn-gate-ip4 / ip4-pending-reject / ip4-probe-log |
-| INPUT_APPROVE_PORT6 | 外网→路由器本机 (v6) | ip6-* 同构 5 条 |
-| FORWARD_APPROVE_PORT4 | 外网→lan 转发 (v4) | forward-ip4-* 同构 5 条 |
-| FORWARD_APPROVE_PORT6 | 外网→lan 转发 (v6，fnOS Web) | forward-ip6-* 同构 5 条 |
-
-每组固定 5 条规则（见「防火墙规则结构」）。改完运行 /etc/ip-approve/sync-approve-firewall.sh（各组分别同步 + 重建缺失的 ipset/规则 + 重启防火墙）。注意 forward 规则只按端口匹配、不限定目标主机，转发端口应只给单一目标服务使用。
+- 备份目录 `/etc/cn-ipset/backup/<YYYYmmdd-HHMMSS>/`，`latest` 软链指向最近一次；仅保留最近 3 份。
+- `--db` 按 config 条目名更新：`qqwry` 读 metowolf 源；`ip2region` 读 v4 拆分双源（jsDelivr → raw）；`zxipv6wry` 未配源，走内置 `https://ip.zxinc.org/ip.7z`；`cdn` 读三源。
+- 新版写库为临时文件 + rename 原子替换，下载做内容校验（mmdb / xdb / yml），非 200 视为错误，未变更的库不重复写入；大库（ip2region-v6 / ipinfo）普通 `update` 仅在已选或已下载时才拉取。
+- 仍存的短板：HTTP 无自动重试；全局超时 300s、TLS 握手 5s；包装脚本以「非空 + 备份回滚」兜底，非空但内容损坏仍需人工核对，下次 cron 重试即可。
 
 ## 升级保留
 
-保留清单 /etc/sysupgrade.conf 的 #approve-ip 段已含：两个 init 脚本、/etc/ip-approve/、审批 CGI、LuCI 面板、/etc/rc.d/ 下的 3 条服务软链（S99 两条自启 + K10 停机，自启状态随升级保留）。若升级后发现服务未自启，手动执行：
+保留清单 `/etc/sysupgrade.conf` 的 `#approve-ip` 段已含：两个 init 脚本、`/etc/ip-approve/`、审批 CGI、LuCI 面板、`/etc/rc.d/` 下 3 条服务软链（S99 两条自启 + K10 停机，自启状态随升级保留）。升级后若服务未自启：
 
 ```sh
 /etc/init.d/approved-ip-watch enable
