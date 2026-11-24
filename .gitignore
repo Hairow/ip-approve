@@ -12,6 +12,7 @@ cn-ipset/.cn-ipset.md5
 cn-ipset/qqwry.dat
 cn-ipset/ip2region_v4.xdb
 cn-ipset/zxipv6wry.db
+cn-ipset/cdn.yml
 # nali 解压后的二进制不入库；release gz 包 + .sha256 + config.yaml + config.yaml.default 随仓库入库，部署时解压到 /etc/cn-ipset/nali
 cn-ipset/nali
 
