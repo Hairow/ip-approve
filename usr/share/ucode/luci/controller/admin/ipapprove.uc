@@ -1,6 +1,6 @@
 // IP 审批接口 — 挂在 admin 下由 LuCI dispatcher 自动会话鉴权
-// POST /cgi-bin/luci/admin/ipapprove/run {"action":"approve|deny|unban","ips":[...]} （批量，写动作仅 POST）
-// GET  ?action=list|denylist （只读）
+// POST /cgi-bin/luci/admin/ipapprove/run {"action":"approve|deny|unban|unallow","ips":[...]} （批量，写动作仅 POST）
+// GET  ?action=list|denylist|allowlist （只读）
 
 'use strict';
 
@@ -52,19 +52,20 @@ return {
 				ips = [ip];
 		}
 
-		if (action != 'list' && action != 'denylist' && action != 'approve'
-		    && action != 'deny' && action != 'unban') {
+		if (action != 'list' && action != 'denylist' && action != 'allowlist'
+		    && action != 'approve' && action != 'deny' && action != 'unban'
+		    && action != 'unallow') {
 			json_err('bad action');
 			return;
 		}
 		/* 写动作仅允许 POST；list/denylist 只读可走 GET */
 		const method = http.getenv('REQUEST_METHOD') ?? 'GET';
-		if ((action == 'approve' || action == 'deny' || action == 'unban')
-		    && method != 'POST') {
+		if ((action == 'approve' || action == 'deny' || action == 'unban'
+		    || action == 'unallow') && method != 'POST') {
 			method_not_allowed();
 			return;
 		}
-		if (action != 'list' && action != 'denylist' && length(ips) == 0) {
+		if (action != 'list' && action != 'denylist' && action != 'allowlist' && length(ips) == 0) {
 			json_err('no valid ip');
 			return;
 		}

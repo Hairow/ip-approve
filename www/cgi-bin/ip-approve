@@ -84,14 +84,14 @@ action_list() {
     exit 0
 }
 
-# 黑名单列表：读 ip-deny.list(v4) + ip-deny6.list(v6)，带 family 标签；
-# 紧随 IP 行的 `# 归属地` 注释作为该条 geo（文件头独立注释不计入）
-action_denylist() {
-    local rows="[" first=1 fam f line cur_ip cur_geo
+# 通用名单读取：$1=v4 文件 $2=v6 文件；注释 `# <ip> <geo>` 关联归属地，
+# 文件头独立注释不计入；结果拼到外层 rows / first 变量
+read_namelist() {
+    local f4="$1" f6="$2" fam f line cur_ip cur_geo
     for fam in v4 v6; do
-        if [ "$fam" = v4 ]; then f="$CN/ip-deny.list"; else f="$CN/ip-deny6.list"; fi
+        [ "$fam" = v4 ] && f="$f4" || f="$f6"
         cur_ip=""; cur_geo=""
-        flush_deny() {
+        flush_row() {
             [ -n "$cur_ip" ] || return 0
             [ $first = 1 ] && first=0 || rows="$rows,"
             rows="$rows{\"ip\":\"$cur_ip\",\"family\":\"$fam\",\"geo\":\"$(json_escape "$cur_geo")\"}"
@@ -102,28 +102,41 @@ action_denylist() {
             case "$line" in
                 \#*|';'*)
                     if [ -n "$cur_ip" ]; then
-                        # 注释格式 `# <ip> <geo>`：去掉前导 # 后，首字段是 IP（丢弃），其余为归属地
+                        # 去掉前导 # 后，首字段是 IP（丢弃），其余为归属地
                         rest=${line#\#}; rest=${rest# }
                         set -- $rest
                         shift
                         cur_geo=$*
                     fi
                     ;;
-                *)
-                    flush_deny
-                    cur_ip="$line"
-                    ;;
+                *) flush_row; cur_ip="$line" ;;
             esac
         done < "$f" 2>/dev/null
-        flush_deny
+        flush_row
     done
+}
+
+# 黑名单列表：读 ip-deny.list(v4) + ip-deny6.list(v6)
+action_denylist() {
+    local rows="[" first=1
+    read_namelist "$CN/ip-deny.list" "$CN/ip-deny6.list"
     rows="$rows]"
     json_out "{\"ok\":true,\"rows\":$rows}"
     exit 0
 }
 
-# 从黑名单移除（支持批量）：入口已吃掉 action，参数直接是 IP/CIDR 列表
-action_unban() {
+# 白名单列表：读 ip-allow.list(v4) + ip-allow6.list(v6)
+action_allowlist() {
+    local rows="[" first=1
+    read_namelist "$CN/ip-allow.list" "$CN/ip-allow6.list"
+    rows="$rows]"
+    json_out "{\"ok\":true,\"rows\":$rows}"
+    exit 0
+}
+
+# 通用名单移除（支持批量）：入口已吃掉 action，参数为 IP/CIDR 列表。
+# 调用前设置全局：RM_F4/RM_F6 名单文件，RM_SET4/RM_SET6 nft 集合，RM_MISS 未命中错误码，RM_ACT 动作名
+action_remove() {
     local ok4="" ok6="" ip
     for ip in "$@"; do
         case "$ip" in
@@ -136,39 +149,39 @@ action_unban() {
     [ -n "$okips" ] || fail "no-valid-entry"
 
     # flock 内原子更新两份名单；记录实际命中的条目
-    rm -f /tmp/.ipap.unban.done /tmp/.ipap.unban.lockrc
+    rm -f /tmp/.ipap.rm.done /tmp/.ipap.rm.lockrc
     (
         flock -n 9 || exit 1
-        : > /tmp/.ipap.unban.done
+        : > /tmp/.ipap.rm.done
         for ip in $ok4; do
-            grep -qxF "$ip" "$CN/ip-deny.list" 2>/dev/null || continue
-            echo "$ip" >> /tmp/.ipap.unban.done
+            grep -qxF "$ip" "$RM_F4" 2>/dev/null || continue
+            echo "$ip" >> /tmp/.ipap.rm.done
             # 同时删正文行与对应的 `# <ip> <geo>` 注释行
             awk -v ip="$ip" '$1 == ip { next } /^#/ && $2 == ip { next } { print }' \
-                "$CN/ip-deny.list" > /tmp/.deny4.new 2>/dev/null
-            mv /tmp/.deny4.new "$CN/ip-deny.list"
+                "$RM_F4" > /tmp/.rm4.new 2>/dev/null
+            mv /tmp/.rm4.new "$RM_F4"
         done
         for ip in $ok6; do
-            grep -qxF "$ip" "$CN/ip-deny6.list" 2>/dev/null || continue
-            echo "$ip" >> /tmp/.ipap.unban.done
+            grep -qxF "$ip" "$RM_F6" 2>/dev/null || continue
+            echo "$ip" >> /tmp/.ipap.rm.done
             awk -v ip="$ip" '$1 == ip { next } /^#/ && $2 == ip { next } { print }' \
-                "$CN/ip-deny6.list" > /tmp/.deny6.new 2>/dev/null
-            mv /tmp/.deny6.new "$CN/ip-deny6.list"
+                "$RM_F6" > /tmp/.rm6.new 2>/dev/null
+            mv /tmp/.rm6.new "$RM_F6"
         done
-        echo ok > /tmp/.ipap.unban.lockrc
+        echo ok > /tmp/.ipap.rm.lockrc
     ) 9>"$PIDF_LOCK"
 
-    [ -f /tmp/.ipap.unban.lockrc ] || fail "op-failed"
-    rm -f /tmp/.ipap.unban.lockrc
+    [ -f /tmp/.ipap.rm.lockrc ] || fail "op-failed"
+    rm -f /tmp/.ipap.rm.lockrc
 
-    # 未命中的报 not-in-denylist
+    # 未命中的报对应错误码
     local done_ips="" h4="" h6=""
-    for ip in $(cat /tmp/.ipap.unban.done 2>/dev/null); do done_ips="$done_ips $ip"; done
+    for ip in $(cat /tmp/.ipap.rm.done 2>/dev/null); do done_ips="$done_ips $ip"; done
     done_ips="${done_ips# }"
     for ip in $okips; do
         case " $done_ips " in
             *" $ip "*) ;;
-            *) fail_add "$ip" "not-in-denylist";;
+            *) fail_add "$ip" "$RM_MISS";;
         esac
     done
     for ip in $done_ips; do
@@ -179,16 +192,32 @@ action_unban() {
     done
 
     # 即时从 nft set 删元素，再后台同步文件与集合
-    [ -n "$h4" ] && nft delete element inet fw4 ip_deny  "{ $h4 }" >/dev/null 2>&1
-    [ -n "$h6" ] && nft delete element inet fw4 ip_deny6 "{ $h6 }" >/dev/null 2>&1
+    [ -n "$h4" ] && nft delete element inet fw4 "$RM_SET4" "{ $h4 }" >/dev/null 2>&1
+    [ -n "$h6" ] && nft delete element inet fw4 "$RM_SET6" "{ $h6 }" >/dev/null 2>&1
     ( fw4 reload-sets >/dev/null 2>&1 & )
 
     local dj="[" df=1
     for ip in $done_ips; do [ $df = 1 ] && df=0 || dj="$dj,"; dj="$dj\"$ip\""; done
     dj="$dj]"
     FAILED_JSON="$FAILED_JSON]"
-    json_out "{\"ok\":true,\"action\":\"unban\",\"done\":$dj,\"failed\":$FAILED_JSON}"
+    json_out "{\"ok\":true,\"action\":\"$RM_ACT\",\"done\":$dj,\"failed\":$FAILED_JSON}"
     exit 0
+}
+
+# 从黑名单移除
+action_unban() {
+    RM_F4="$CN/ip-deny.list";  RM_F6="$CN/ip-deny6.list"
+    RM_SET4=ip_deny;           RM_SET6=ip_deny6
+    RM_MISS=not-in-denylist;   RM_ACT=unban
+    action_remove "$@"
+}
+
+# 从白名单移除
+action_unallow() {
+    RM_F4="$CN/ip-allow.list";  RM_F6="$CN/ip-allow6.list"
+    RM_SET4=ip_allow;          RM_SET6=ip_allow6
+    RM_MISS=not-in-allowlist;  RM_ACT=unallow
+    action_remove "$@"
 }
 
 # 审批/拒绝（支持批量）：$1=approve|deny，其余为 IP
@@ -294,9 +323,9 @@ else
     check_auth || fail "unauthorized"
     ACTION=$(printf '%s' "$QUERY_STRING" | sed -n 's/.*action=\([a-z]*\).*/\1/p')
     IP=$(printf '%s' "$QUERY_STRING" | sed -n 's/.*[?&]ip=\([0-9a-fA-F:.]*\).*/\1/p')
-    # list/denylist 为只读可走 GET；approve/deny/unban 为写动作，仅允许 POST
+    # list/denylist/allowlist 为只读可走 GET；approve/deny/unban/unallow 为写动作，仅允许 POST
     case "$ACTION" in
-        approve|deny|unban)
+        approve|deny|unban|unallow)
             [ "$REQUEST_METHOD" = "POST" ] || method_not_allowed
             ;;
     esac
@@ -305,6 +334,7 @@ fi
 case "$ACTION" in
     list) action_list;;
     denylist) action_denylist;;
+    allowlist) action_allowlist;;
     approve|deny)
         if [ -n "$IPAPPROVE_SELFTEST" ]; then
             [ $# -ge 1 ] || fail "missing ip"
@@ -321,6 +351,15 @@ case "$ACTION" in
         else
             [ -n "$IP" ] || fail "missing ip"
             action_unban "$IP"
+        fi
+        ;;
+    unallow)
+        if [ -n "$IPAPPROVE_SELFTEST" ]; then
+            [ $# -ge 1 ] || fail "missing ip"
+            action_unallow "$@"
+        else
+            [ -n "$IP" ] || fail "missing ip"
+            action_unallow "$IP"
         fi
         ;;
     *) fail "missing action";;

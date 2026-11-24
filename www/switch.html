@@ -1191,6 +1191,7 @@
       });
       if (window.ipapCountSync) { try { await window.ipapCountSync(); } catch (e) { if (e instanceof SessionError) throw e; } }
       if (window.denyCountSync) { try { await window.denyCountSync(); } catch (e) { if (e instanceof SessionError) throw e; } }
+      if (window.allowCountSync) { try { await window.allowCountSync(); } catch (e) { if (e instanceof SessionError) throw e; } }
       draw();
       /* 首屏数据已就绪：从加载态切到主面板（内容自己 viewIn 浮入），再记录真实高度 */
       if (!panelReady) {
@@ -1280,6 +1281,12 @@
     <div class="cell clickable" data-act="ipdeny" title="点击查看 IP 黑名单并可移除">
       <div class="k">IP 黑名单</div>
       <div class="v" id="denyCellN">${window.denyBlockedCount ? window.denyBlockedCount() : '?'}</div>
+      <span class="more" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+        stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></span></div>
+    <div class="cell clickable" data-act="ipallow" title="点击查看 IP 白名单并可移除">
+      <div class="k">IP 白名单</div>
+      <div class="v" id="allowCellN">${window.allowAllowedCount ? window.allowAllowedCount() : '?'}</div>
       <span class="more" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"
         stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
         stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></span></div>
@@ -1511,6 +1518,7 @@
         if (e.target.closest('.cell[data-act="devices"]')) openDevices();
         if (e.target.closest('.cell[data-act="ipapprove"]') && window.ipapOpen) ipapOpen();
         if (e.target.closest('.cell[data-act="ipdeny"]') && window.denyOpen) denyOpen();
+        if (e.target.closest('.cell[data-act="ipallow"]') && window.allowOpen) allowOpen();
       });
       $('devClose').addEventListener('click', closeDevices);
       $('devModal').addEventListener('click', e => {
@@ -1790,6 +1798,35 @@
           <span>已选 <span class="n" id="deny-batch-n">0</span> 条</span>
           <button id="deny-batch-del" class="no" onclick="denyBatchUnban()" disabled>移除所选</button>
           <button onclick="denyClearSel()" disabled id="deny-batch-clear">取消选择</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="allowModal" class="ipap-modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <b>IP 白名单 · 永久放行中</b><span class="cnt" id="allow-count"></span>
+        <button type="button" id="allowClose">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div style="font-size:12px;color:var(--muted);margin-top:8px">名单内 IP 被防火墙永久放行，直接跳过审批队列。移除后该 IP
+          再连未审批端口会重新进入审批队列。</div>
+        <div class="ipap-search">
+          <input id="allow-q" placeholder="按 IP 搜索" onblur="allowFilter()" onkeydown="if(event.key==='Enter')this.blur()">
+          <span class="ipap-fams">
+            <button type="button" class="ipap-fam on" data-fam="all" onclick="allowSetFam('all')">全部</button>
+            <button type="button" class="ipap-fam" data-fam="v4" onclick="allowSetFam('v4')">IPv4</button>
+            <button type="button" class="ipap-fam" data-fam="v6" onclick="allowSetFam('v6')">IPv6</button>
+          </span>
+        </div>
+        <div class="ipap-msg" id="allow-msg"></div>
+        <div id="allow-body">
+          <div class="ipap-empty">加载中…</div>
+        </div>
+        <div class="ipap-batch" id="allow-batch">
+          <span>已选 <span class="n" id="allow-batch-n">0</span> 条</span>
+          <button id="allow-batch-del" class="no" onclick="allowBatchUnallow()" disabled>移除所选</button>
+          <button onclick="allowClearSel()" disabled id="allow-batch-clear">取消选择</button>
         </div>
       </div>
     </div>
@@ -2189,5 +2226,200 @@
       document.getElementById('denyClose').addEventListener('click', denyClose);
       modal.addEventListener('click', e => { if (e.target.id === 'denyModal') denyClose(); });
       document.addEventListener('keydown', e => { if (e.key === 'Escape' && modal.classList.contains('show')) denyClose(); });
+    })();
+  </script>
+
+  <script>
+    (function () {
+      const modal = document.getElementById('allowModal');
+      const PAGE_SIZE = 10;
+      let allRows = [];          // [{ ip, family, geo }]
+      let page = 1;
+      let selected = new Set();
+      let fam = 'all';           // 分类筛选：all / v4 / v6
+
+      window.allowAllowedCount = function () { return allRows.length; };
+
+      function setCell(n) { const el = document.getElementById('allowCellN'); if (el) el.textContent = n; }
+      function batchUI() {
+        document.getElementById('allow-batch-n').textContent = selected.size;
+        const dis = selected.size === 0;
+        document.getElementById('allow-batch-del').disabled = dis;
+        document.getElementById('allow-batch-clear').disabled = dis;
+      }
+      window.allowAll = function (on) {
+        const start = (page - 1) * PAGE_SIZE;
+        filteredRows().slice(start, start + PAGE_SIZE).forEach(r => on ? selected.add(r.ip) : selected.delete(r.ip));
+        allowGo(page);
+      };
+      window.allowClearSel = function () { selected.clear(); allowGo(page); };
+      window.allowToggleRow = function (ip) {
+        selected.has(ip) ? selected.delete(ip) : selected.add(ip);
+        allowGo(page);
+      };
+      window.allowCopy = function (ip) {
+        const msg = document.getElementById('allow-msg');
+        const done = ok => {
+          if (msg && ok) {
+            msg.textContent = '已复制 ' + ip;
+            setTimeout(() => { if (msg.textContent === '已复制 ' + ip) msg.textContent = ''; }, 1500);
+          }
+        };
+        const fallback = () => {
+          const ta = document.createElement('textarea');
+          ta.value = ip; ta.style.cssText = 'position:fixed;opacity:0';
+          document.body.appendChild(ta); ta.select();
+          let ok = false; try { ok = document.execCommand('copy'); } catch (e) { }
+          document.body.removeChild(ta); done(ok);
+        };
+        if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(ip).then(() => done(true)).catch(fallback);
+        else fallback();
+      };
+
+      /* 按 IP 找设备名：用面板已合并的设备明细，匹配不到就留空（公网站点无 LAN 名正常） */
+      function deviceName(ip) {
+        for (const d of (S.devices || [])) {
+          if ((d.v4 || []).indexOf(ip) >= 0 || (d.v6 || []).indexOf(ip) >= 0) return d.name || '';
+        }
+        return '';
+      }
+
+      function filteredRows() {
+        let rows = allRows;
+        if (fam !== 'all') rows = rows.filter(r => r.family === fam);
+        const kw = (document.getElementById('allow-q').value || '').trim().toLowerCase();
+        if (kw) rows = rows.filter(r => (r.ip || '').toLowerCase().indexOf(kw) !== -1 || (r.geo || '').toLowerCase().indexOf(kw) !== -1);
+        return rows;
+      }
+      function totalPages() { return Math.max(1, Math.ceil(filteredRows().length / PAGE_SIZE)); }
+      window.allowFilter = function () { page = 1; allowGo(1); };
+      window.allowSetFam = function (f) {
+        fam = f;
+        document.querySelectorAll('#allowModal .ipap-fam').forEach(b =>
+          b.classList.toggle('on', b.getAttribute('data-fam') === f));
+        page = 1; allowGo(1);
+      };
+
+      window.allowGo = function (p) {
+        const body = document.getElementById('allow-body');
+        const rowsAll = filteredRows();
+        page = Math.min(Math.max(1, p), totalPages());
+        document.getElementById('allow-count').textContent =
+          rowsAll.length ? (rowsAll.length === allRows.length ? '共 ' + allRows.length + ' 条' : '匹配 ' + rowsAll.length + ' / ' + allRows.length + ' 条')
+            : (allRows.length ? '该分类无条目' : '名单为空');
+        if (!rowsAll.length) {
+          body.innerHTML = '<div class="ipap-empty">'
+            + (!allRows.length ? '白名单为空。' : (fam !== 'all' ? '该分类下没有条目。' : '没有匹配的记录。')) + '</div>';
+          batchUI(); return;
+        }
+        const start = (page - 1) * PAGE_SIZE;
+        const rows = rowsAll.slice(start, start + PAGE_SIZE);
+        const allOn = rows.every(r => selected.has(r.ip));
+        let html = '<table><tr><th class="ck"><input type="checkbox"' + (allOn ? ' checked' : '') + ' onchange="allowAll(this.checked)" title="全选当前页"></th><th>IP / 设备</th><th>操作</th></tr>';
+        for (const row of rows) {
+          const nm = deviceName(row.ip);
+          const ip = esc(row.ip || '');
+          html += '<tr data-ip="' + ip + '">'
+            + '<td class="ck"><input type="checkbox" class="allow-row-check"' + (selected.has(row.ip) ? ' checked' : '') + '></td>'
+            + '<td class="ip" style="cursor:pointer" title="点击选中/取消选中，同时复制 IP"><span class="ip">' + ip + '</span><span class="t">'
+            + (row.family === 'v6' ? 'v6' : 'v4') + (nm ? ' · ' + esc(nm) : '') + (row.geo ? ' · ' + esc(row.geo) : '') + '</span></td>'
+            + '<td><div class="btns"><button class="no" data-act="unallow">移除白名单</button></div></td></tr>';
+        }
+        html += '</table>';
+        if (totalPages() > 1) {
+          html += '<div class="ipap-pager">'
+            + '<button class="pg" onclick="allowGo(' + (page - 1) + ')"' + (page <= 1 ? ' disabled' : '') + '>上一页</button>'
+            + '<span>第 ' + page + ' / ' + totalPages() + ' 页 · 共 ' + rowsAll.length + ' 条</span>'
+            + '<button class="pg" onclick="allowGo(' + (page + 1) + ')"' + (page >= totalPages() ? ' disabled' : '') + '>下一页</button>'
+            + '</div>';
+        }
+        body.innerHTML = html;
+        batchUI();
+        /* 事件委托：IP 经 data-ip 传递，不再内联拼 onclick，避免名单内容注入 HTML/JS */
+        body.querySelectorAll('.allow-row-check').forEach(c => c.addEventListener('change', () => {
+          const rip = c.closest('tr').dataset.ip;
+          if (c.checked) selected.add(rip); else selected.delete(rip);
+          batchUI();
+        }));
+        body.querySelectorAll('tr[data-ip] .ip').forEach(el => el.addEventListener('click', () => {
+          const rip = el.closest('tr').dataset.ip;
+          allowToggleRow(rip); allowCopy(rip);
+        }));
+        body.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', () =>
+          allowUnallow(b.closest('tr').dataset.ip)));
+      };
+
+      async function refreshList() {
+        const r = await fetch('/cgi-bin/luci/admin/ipapprove/run?action=allowlist', { cache: 'no-store' });
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || '加载失败');
+        allRows = j.rows || [];
+        selected = new Set([...selected].filter(ip => allRows.some(r => r.ip === ip)));
+        setCell(allRows.length);
+        page = Math.min(page, totalPages());
+        allowGo(page);
+      }
+
+      window.allowRefresh = async function () {
+        document.getElementById('allow-msg').textContent = '';
+        try { await refreshList(); }
+        catch (e) { document.getElementById('allow-body').innerHTML = '<div class="ipap-empty">加载失败：' + esc(String(e.message || e)) + '</div>'; }
+      };
+
+      window.allowCountSync = async function () {
+        try {
+          const r = await fetch('/cgi-bin/luci/admin/ipapprove/run?action=allowlist', { cache: 'no-store' });
+          const j = await r.json();
+          if (j.ok) {
+            allRows = j.rows || [];
+            selected = new Set([...selected].filter(ip => allRows.some(r => r.ip === ip)));
+            setCell(allRows.length);
+            if (modal.classList.contains('show')) { page = Math.min(page, totalPages()); allowGo(page); }
+          } else { setCell('?'); modal.classList.remove('show'); }
+        } catch (e) { setCell('?'); }
+      };
+
+      async function allowPost(ips) {
+        const r = await fetch('/cgi-bin/luci/admin/ipapprove/run', {
+          method: 'POST', credentials: 'same-origin', cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'unallow', ips: ips })
+        });
+        return await r.json();
+      }
+      window.allowUnallow = async function (ip) {
+        const msg = document.getElementById('allow-msg');
+        try {
+          const j = await allowPost([ip]);
+          const n = (j.done || []).length;
+          if (j.ok && n > 0) { msg.textContent = '已移除 ' + ip; setTimeout(allowRefresh, 100); }
+          else { msg.textContent = '操作未生效：' + (j.error || (j.failed && j.failed[0] && j.failed[0].error) || '未在名单'); setTimeout(allowRefresh, 300); }
+        } catch (e) { msg.textContent = '请求失败：' + e; }
+      };
+      window.allowBatchUnallow = async function () {
+        const msg = document.getElementById('allow-msg');
+        const ips = [...selected];
+        if (!ips.length) return;
+        msg.textContent = '移除中… 共 ' + ips.length + ' 条';
+        try {
+          const j = await allowPost(ips);
+          if (!j.ok) { msg.textContent = '操作失败：' + (j.error || ''); setTimeout(allowRefresh, 300); return; }
+          const n = (j.done || []).length, f = (j.failed || []).length;
+          msg.textContent = '批量移除完成：成功 ' + n + '，失败 ' + f;
+          selected.clear();
+          setTimeout(allowRefresh, 100);
+        } catch (e) { msg.textContent = '请求失败：' + e; }
+      };
+
+      window.allowOpen = function () {
+        document.getElementById('allow-body').innerHTML = '<div class="ipap-empty">加载中…</div>';
+        document.getElementById('allow-msg').textContent = '';
+        modal.classList.add('show');
+        allowRefresh();
+      };
+      window.allowClose = function () { modal.classList.remove('show'); };
+      document.getElementById('allowClose').addEventListener('click', allowClose);
+      modal.addEventListener('click', e => { if (e.target.id === 'allowModal') allowClose(); });
+      document.addEventListener('keydown', e => { if (e.key === 'Escape' && modal.classList.contains('show')) allowClose(); });
     })();
   </script>
