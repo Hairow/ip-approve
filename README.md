@@ -82,15 +82,12 @@ rm -f /etc/cn-ipset/nali.gz
 
 # 5. 放置配置文件到二进制同目录（内容见下节）：/etc/cn-ipset/config.yaml
 
-# 6. 首次拉取可由 nali 更新的库（qqwry + zx；ip2region_v4.xdb 无下载源，需手动放置，见下注）
-NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db qqwry,zxipv6wry
+# 6. 首次拉取三库（之后由 cron 自动更新，见「地址库刷新」一节）
+NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db qqwry,zxipv6wry,ip2region
 
 # 7. 确认三库就位
 ls -l /etc/cn-ipset/ip2region_v4.xdb /etc/cn-ipset/qqwry.dat /etc/cn-ipset/zxipv6wry.db
 ```
-
-> ip2region v4 库不由 `nali update` 拉取，首次部署需手动下载到 `/etc/cn-ipset/ip2region_v4.xdb`：
-> `https://cdn.jsdelivr.net/gh/lionsoul2014/ip2region@master/data/ip2region_v4.xdb`（raw 备用）。
 ```
 
 ### 配置
@@ -100,7 +97,7 @@ ls -l /etc/cn-ipset/ip2region_v4.xdb /etc/cn-ipset/qqwry.dat /etc/cn-ipset/zxipv
 - `NALI_HOME=/etc/cn-ipset`：**配置目录与数据目录都指向该目录**（最简便，本项目采用）；
 - 或分开指定：`NALI_CONFIG_HOME`（配置目录）、`NALI_DB_HOME`（库目录）。
 
-`config.yaml.default` 是 nali 在空目录首次运行时自动落盘的上游默认稿（相对路径、内置全部条目与默认源）；仓库内 `config.yaml` 保留 default 全量条目，仅两处偏离：qqwry 下载源换为 metowolf，ip2region 回退库 `file` 指向本地绝对路径。
+`config.yaml.default` 是 nali 在空目录首次运行时自动落盘的上游默认稿（相对路径、内置全部条目与默认源）；仓库内 `config.yaml` 保留 default 全量条目，偏离三处：qqwry 下载源换为 metowolf，ip2region 回退库 `file` 指向本地绝对路径、下载源换为可达的 v4 拆分库双源（default 内置的旧 `ip2region.xdb` 路径在 master 已失效）。
 
 配置文件名固定为 `<配置目录>/config.yaml`。关键三条（其余条目同 default 基线）：
 
@@ -118,6 +115,9 @@ databases:
       file: /etc/cn-ipset/ip2region_v4.xdb
       types:
         - IPv4
+      download-urls:
+        - "https://cdn.jsdelivr.net/gh/lionsoul2014/ip2region@master/data/ip2region_v4.xdb"
+        - "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb"
     - name: zxipv6wry
       format: zxipv6wry
       file: zxipv6wry.db
@@ -159,13 +159,12 @@ NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali -j 2001:4860:4860::8888
 nali 本身不是守护进程，**没有内置定时任务**；库刷新由外部 cron 调用 `nali update` 触发。设备 crontab：
 
 ```cron
-30 4 * * * NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db qqwry,zxipv6wry 2>&1 | logger -t nali-update
+30 4 * * * NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db qqwry,zxipv6wry,ip2region 2>&1 | logger -t nali-update
 ```
 
-- `--db` 按 config 条目名更新：`qqwry` 读 metowolf `download-urls`；`zxipv6wry` 未配源，走 nali 内置 `https://ip.zxinc.org/ip.7z`（下载后解压取 `ipv6wry.db`）。
-- `ip2region` 未配 `download-urls`，v0.8.1 对 ip2region 无内置下载分支，`nali update` 会跳过并提示「暂不支持该类型数据库的自动更新」，因此不纳入 cron；该库保持手动部署的版本。
-- `nali update` 只在执行时拉库，不做版本比对，每次全量下载；更新的两库合计约 28MB，凌晨低峰执行一次。
-- 已知短板（v0.8.1）：写入为「先删旧库再直写目标文件」，非原子；ip2region 条目不做内容校验（qqwry / zx 有内置 CheckFile）；HTTP 无重试、超时固定（全局 60s、TLS 握手 5s）。断电或网络中断可能留下半截库，下次 update 失败时沿用旧库即可。
+- `--db` 按 config 条目名更新：`qqwry` 读 metowolf `download-urls`；`ip2region` 读 v4 拆分库双源（jsDelivr → raw）；`zxipv6wry` 未配源，走 nali 内置 `https://ip.zxinc.org/ip.7z`（下载后解压取 `ipv6wry.db`）。
+- `nali update` 只在执行时拉库，不做版本比对，每次全量下载；三库合计约 41MB，凌晨低峰执行一次。
+- 已知短板（v0.8.1）：写入为「先删旧库再直写目标文件」，非原子；ip2region 条目不做内容校验（qqwry / zx 有内置 CheckFile）；HTTP 无重试、超时固定（全局 60s、TLS 握手 5s），qqwry 约 27MB 偶发读 body 超时。断电/中断/超时不会覆盖通过校验的旧库，下次 cron 重试即可。
 
 ## 服务操作（用 init 脚本，不要裸跑脚本本体）
 

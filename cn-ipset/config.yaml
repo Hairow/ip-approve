@@ -59,6 +59,9 @@ databases:
         - zh-CN
       types:
         - IPv4
+      download-urls:
+        - https://cdn.jsdelivr.net/gh/lionsoul2014/ip2region@master/data/ip2region_v4.xdb
+        - https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb
     - name: ip2location
       format: ip2location
       file: IP2LOCATION-LITE-DB3.IPV6.BIN
