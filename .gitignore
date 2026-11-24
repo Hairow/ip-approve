@@ -3,12 +3,14 @@ approved.conf
 
 # 运行时数据（以路由器 /etc/ip-approve/ 为准）
 *.list
-pending.list
 
 # cn 路由表由 PassWall 数据经 refresh-cn-ipset.sh 定时刷新，不入库
 cn-ipset/chnroute
 cn-ipset/chnroute6
 cn-ipset/.cn-ipset.md5
+# 离线纯真库及其版本戳由 update-qqwry.sh 定时下载，不入库
+cn-ipset/qqwry.dat
+cn-ipset/.qqwry.version
 
 # 备份
 firewall.bak-*
