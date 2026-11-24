@@ -165,6 +165,14 @@ backfill() {
 if [ "$1" = "test" ]; then by_type "$2" "$3"; exit $?; fi
 if [ "$1" = "backfill" ]; then backfill; exit $?; fi
 
+# --- 服务入口闸门：仅 procd 托管可进入前台主循环；test/backfill 不受限 ---
+# 主判据：init 经 procd env 注入 APPROVE_WATCH_SVC=1；兜底认父进程为 PID 1（procd 收养）。
+# 终端裸跑（父进程为 ash/sshd）既无标记也非 PID 1，直接退出，避免第二个前台循环与服务实例冲突。
+if [ "${APPROVE_WATCH_SVC:-}" != "1" ] && [ "${PPID:-}" != "1" ]; then
+    echo "approved-ip-watch.sh 为 procd 托管服务，禁止直接裸跑；请用 /etc/init.d/approved-ip-watch start|restart" >&2
+    exit 1
+fi
+
 # --- 单实例：清掉 pidfile 记录的旧实例进程树 ---
 kill_tree() {
     local pid="$1" c1 c2

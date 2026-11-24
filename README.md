@@ -42,6 +42,8 @@
 | `etc/ip-approve/approved.conf.example` | 配置模板：钉钉 webhook / 加签、4 个端口变量、QUICK_SECRET / QUICK_URL；复制为 `approved.conf`，权限 600 |
 | `etc/ip-approve/approved-ip-watch.sh` | 监听服务本体：解析探测日志 → pending 集合 + pending.list → 推钉钉 |
 | `etc/ip-approve/sync-approve-firewall.sh` | 各组端口同步 + 缺失集合 / 规则自动重建 |
+| `etc/init.d/approved-ip-watch` | watch 服务 procd 定义（START=99）；注入 `APPROVE_WATCH_SVC=1` 供脚本入口闸门校验 |
+| `etc/init.d/ipapprove-http` | quick 签名 CGI 的 uhttpd 服务定义（127.0.0.1:50080，docroot 为 `etc/ip-approve/quick`） |
 | `www/switch.html` | 面板前端：设备 / 服务开关 + IP 审批 / 黑名单 / 白名单弹层 |
 | `www/cgi-bin/ip-approve` | 审批执行核心 CGI（flock 原子更新底账与 nft 集合） |
 | `usr/share/ucode/luci/controller/admin/ipapprove.uc` | IP 审批接口：POST 写动作、GET 只读列表 |
@@ -84,7 +86,7 @@ forward 规则只按端口匹配、不限定目标主机，转发端口应只给
 /etc/init.d/ipapprove-http    start|stop|restart|enable|disable   # 50080 签名 CGI 服务（uhttpd）
 ```
 
-两个服务均已 enable 开机自启（S99）。裸跑 `approved-ip-watch.sh`（不带参数）会进前台主循环，与 procd 实例冲突，禁止。
+两个服务均已 enable 开机自启（S99）。watch 脚本入口带服务闸门：仅 procd 托管进程可进入前台主循环——主判据为 init 注入的 `APPROVE_WATCH_SVC=1` 标记，兜底认父进程为 PID 1（procd 收养）；在终端直接裸跑（父进程为 ash / sshd）会被拒绝并提示改用 init 脚本，不会再起第二个循环。`test` / `backfill` 子命令在闸门之前，不受限制。
 
 ### 手动维护命令
 
