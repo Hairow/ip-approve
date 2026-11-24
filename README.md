@@ -1,6 +1,6 @@
 # /etc/ip-approve — IP 审批防火墙体系
 
-对 4 组审批端口（见 approved.conf 的 INPUT_APPROVE_PORT4/6、FORWARD_APPROVE_PORT4/6）做「先探测进 pending → 钉钉推送 → 手机一键批准/拒绝」的动态放行体系。**每种情况（input/forward × v4/v6）固定 4 条防火墙规则**，见下文「防火墙规则结构」。
+对 4 组审批端口（见 approved.conf 的 INPUT_APPROVE_PORT4/6、FORWARD_APPROVE_PORT4/6）做「先探测进 pending → 钉钉推送 → 手机一键批准/拒绝」的动态放行体系。**每种情况（input/forward × v4/v6）固定 5 条防火墙规则**（allow → deny → cn-gate → pending → probe-log），见下文「防火墙规则结构」。
 
 ## 前置条件
 
@@ -64,22 +64,25 @@ cn 白名单相关文件在 /etc/cn-ipset/，与本目录无关。
 - 按钮链接域名取自 QUICK_URL；清空 QUICK_URL 或 QUICK_SECRET 自动退回纯文本推送
 - 已处理 IP 再点旧按钮会显示「已被批准/拒绝」
 
-## 防火墙规则结构（每组固定 4 条）
+## 防火墙规则结构（每组固定 5 条）
 
-4 组规则（input v4 / input v6 / forward v4 / forward v6）结构完全同构，每条只差名字前缀（ip4- / ip6- / forward-ip4- / forward-ip6-）和引用的 ipset（v4 组用 ip_allow/ip_deny/ip_pending，v6 组用 *6 后缀）。nft 链内顺序固定：
+4 组规则（input v4 / input v6 / forward v4 / forward v6）结构完全同构，每条只差名字前缀（ip4- / ip6- / forward-ip4- / forward-ip6-）和引用的 ipset（v4 组用 ip_allow/ip_deny/ip_pending/cn_ipv4，v6 组用 *6 后缀）。fw4 按 UCI 段顺序进链，链内顺序固定：
 
 | 顺序 | 规则 | 匹配 | 动作 | 作用 |
 |------|------|------|------|------|
-| 1 | `<前缀>-deny-drop` | 源 ∈ ip_deny 集合 | drop | 已拒绝名单拦截 |
-| 2 | `<前缀>-allow-accept` | 源 ∈ ip_allow 集合 | accept | 已批准名单放行 |
-| 3 | `<前缀>-pending-reject` | 源 ∈ ip_pending 集合 | reject | 审批中的重复探测，静默拒绝（watch 去重，不重复推送） |
-| 4 | `<前缀>-probe-log` | 其余来源（无集合匹配） | log + reject | **新探测源发现**：写内核日志（前缀如 `ip4-probe-log: `），watch 抓取 → 进 pending → 推钉钉 |
+| 1 | `<前缀>-allow-accept` | 源 ∈ ip_allow 集合 | accept | 已批准名单放行（allow 优先于 deny） |
+| 2 | `<前缀>-deny-drop` | 源 ∈ ip_deny 集合 | drop | 已拒绝名单拦截，静默丢弃 |
+| 3 | `cn-gate-<前缀>` | 源 ∉ cn_ipv4/cn_ipv6 集合 | drop | 未列名的国外源直接丢弃，不进审核、不记日志 |
+| 4 | `<前缀>-pending-reject` | 源 ∈ ip_pending 集合 | reject | 审批中的重复探测，静默拒绝（watch 去重，不重复推送） |
+| 5 | `<前缀>-probe-log` | 其余国内来源（无集合匹配） | log + reject | **新探测源发现**：写内核日志（前缀如 `ip4-probe-log: `），watch 抓取 → 进 pending → 推钉钉 |
 
 要点：
 
-- 第 4 条的拦截动作与 zone 默认拒绝相同，纯粹为写日志；不重开 wan zone 全量日志（历史上曾因此产生 pending 污染）
-- **probe-log 是全系统唯一的日志源**：allow/deny/pending 规则均静默（allow/deny 无需记录，pending 的重复探测由 watch 去重，日志无用途）
-- input 组规则只匹配目标=路由器本机（input_wan 链）；forward 组匹配 wan→lan 转发流量（forward_wan 链）
+- **allow 优先于 deny**：名单冲突（同一 IP 同时在 allow 与 deny）时按 allow 放行；cn-gate 排在白/黑名单之后，allow 里的海外地址可豁免国籍校验，deny 里的海外地址仍被第 2 条拦截
+- **cn-gate 只兜底未列名的国外新源**：大陆集合 `cn_ipv4`/`cn_ipv6` 由 `/etc/cn-ipset/refresh-cn-ipset.sh` 维护并保证非空；gate 静默 DROP，不写日志、不进 pending、不推钉钉
+- 第 5 条的拦截动作与 zone 默认拒绝相同，纯粹为写日志；不重开 wan zone 全量日志（历史上曾因此产生 pending 污染）
+- **probe-log 是全系统唯一的日志源**：allow/deny/gate/pending 规则均静默（allow/deny 无需记录，gate 不保留海外痕迹，pending 的重复探测由 watch 去重，日志无用途）
+- input 组规则只匹配目标=路由器本机（input_wan 链）；forward 组匹配 wan→lan 转发流量（forward_wan 链）；tailscale 是独立 zone（`input_tailscale`/`forward_tailscale`），与 wan 审批链互不到达
 - **回程与已建连不会被审批组误匹配**：fw4 基础链在跳进 zone 链（input_wan/forward_wan）之前，已对 established/related 报文先行放行，回程包到不了审批规则；且回程报文的 dport 是对端分配的临时端口，也与审批端口对不上。已知缝隙：invalid/untracked 状态报文仍可能落到 zone 链被评估
 - 日志前缀由 fw4 取自规则名，watch 用泛匹配 `*pending-reject*` / `*probe-log*` 兜住所有前缀
 - 组随对应端口变量启停：留空 = 整组移除，流量走 zone 默认拒绝且不可审批
@@ -94,12 +97,12 @@ approved.conf 里 4 个端口变量，各自独立、均可留空（留空 = 该
 
 | 变量 | 作用 | 规则组 |
 |------|------|--------|
-| INPUT_APPROVE_PORT4 | 外网→路由器本机 (v4) | ip4-deny-drop / ip4-allow-accept / ip4-pending-reject / ip4-probe-log |
-| INPUT_APPROVE_PORT6 | 外网→路由器本机 (v6) | ip6-* 同构 4 条 |
-| FORWARD_APPROVE_PORT4 | 外网→lan 转发 (v4) | forward-ip4-* 同构 4 条 |
-| FORWARD_APPROVE_PORT6 | 外网→lan 转发 (v6，fnOS Web) | forward-ip6-* 同构 4 条 |
+| INPUT_APPROVE_PORT4 | 外网→路由器本机 (v4) | ip4-allow-accept / ip4-deny-drop / cn-gate-ip4 / ip4-pending-reject / ip4-probe-log |
+| INPUT_APPROVE_PORT6 | 外网→路由器本机 (v6) | ip6-* 同构 5 条 |
+| FORWARD_APPROVE_PORT4 | 外网→lan 转发 (v4) | forward-ip4-* 同构 5 条 |
+| FORWARD_APPROVE_PORT6 | 外网→lan 转发 (v6，fnOS Web) | forward-ip6-* 同构 5 条 |
 
-每组固定 4 条规则（见「防火墙规则结构」）。改完运行 /etc/ip-approve/sync-approve-firewall.sh（各组分别同步 + 重建缺失的 ipset/规则 + 重启防火墙）。注意 forward 规则只按端口匹配、不限定目标主机，转发端口应只给单一目标服务使用。
+每组固定 5 条规则（见「防火墙规则结构」）。改完运行 /etc/ip-approve/sync-approve-firewall.sh（各组分别同步 + 重建缺失的 ipset/规则 + 重启防火墙）。注意 forward 规则只按端口匹配、不限定目标主机，转发端口应只给单一目标服务使用。
 
 ## 升级保留
 
