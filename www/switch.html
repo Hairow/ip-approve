@@ -553,7 +553,9 @@
       border: 1px solid var(--line-strong);
       border-radius: var(--radius);
       width: min(620px, 96vw);
-      max-height: 82vh;
+      /* 固定高度：弹窗不随列表条数增减而伸缩，内容区在 body 内滚动 */
+      height: min(80vh, 720px);
+      min-height: 300px;
       display: flex;
       flex-direction: column;
       box-shadow: var(--shadow-panel)
@@ -597,6 +599,8 @@
     }
 
     .devlist {
+      flex: 1 1 auto;
+      min-height: 0;
       overflow: auto;
       padding: 4px 18px 16px;
       -webkit-overflow-scrolling: touch
@@ -697,6 +701,11 @@
 
       #login {
         padding: 24px
+      }
+
+      .modal-box {
+        height: 86vh;
+        min-height: 240px
       }
 
       .head h1 {
@@ -1652,6 +1661,8 @@
     }
 
     .ipap-modal .modal-body {
+      flex: 1 1 auto;
+      min-height: 0;
       overflow: auto;
       padding: 4px 18px 16px;
       -webkit-overflow-scrolling: touch
