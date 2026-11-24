@@ -35,7 +35,7 @@
 | cn-ipset/refresh-nali-db.sh | 归属地/CDN 库刷新脚本：先备份四库 → `nali update` → 非空校验、异常自动回滚 → 保留最近 3 份备份 |
 | cn-ipset/config.yaml | nali 运行配置：基于上游 default 全量条目，库文件均为相对路径；qqwry 指向 metowolf 源，ip2region 回退库用 v4 拆分双源；通过 `NALI_HOME=/etc/cn-ipset` 加载 |
 | cn-ipset/config.yaml.default | nali v0.8.1 首次运行自动生成的上游默认配置基线（全部内置条目 + 默认下载源），仅作对照参考；设备实际使用 `config.yaml` |
-| cn-ipset/nali-linux-armv8-v0.8.1.gz (+ `.sha256`) | nali release 压缩包随仓库入库；设备上解压为 `/etc/cn-ipset/nali` |
+| cn-ipset/nali-linux-armv8-`<ver>`.gz (+ `.sha256`) | nali 二进制压缩包随仓库入库；设备上解压为 `/etc/cn-ipset/nali`。当前运行 `v0.8.1-13-g1651b7a`（本地交叉编译 master `1651b7a`）；`v0.8.1` release 包留档可回退 |
 | cn-ipset/chnroute / chnroute6 | 大陆 IPv4/IPv6 路由表副本（运行时数据，不入库；远端位于 /etc/cn-ipset/） |
 | cn-ipset/qqwry.dat | 离线 IPv4 归属库**首选**（纯真库，运行时数据，不入库） |
 | cn-ipset/ip2region_v4.xdb | 离线 IPv4 归属库**回退**（ip2region，qqwry 未命中时使用，运行时数据，不入库） |
@@ -59,23 +59,35 @@ cn 集合在路由器上位于 `/etc/cn-ipset/`，本地仓库仅保留刷新脚
 | 解压工具 | `gunzip`（busybox 自带）；校验用 `sha256sum`（可选，设备已自带） |
 | 离线 IPv4 库 | 首选 `/etc/cn-ipset/qqwry.dat`（纯真库），回退 `/etc/cn-ipset/ip2region_v4.xdb`（ip2region） |
 | 离线 IPv6 库 | `/etc/cn-ipset/zxipv6wry.db`（ZX IPv6 库） |
-| 磁盘占用 | gz 包约 3.9MB，解压后二进制约 10.1MB；四库合计约 41MB |
+| 磁盘占用 | gz 包约 3.8MB，解压后二进制约 9.3MB；四库合计约 41MB |
 
 ### 安装步骤（aarch64）
 
-版本固定 `v0.8.1`，资产地址：
-`https://github.com/zu1k/nali/releases/download/v0.8.1/nali-linux-armv8-v0.8.1.gz`
-（同名 `.sha256` 为校验文件）
+当前设备运行的是本地交叉编译的 master 版本 `v0.8.1-13-g1651b7a`（源码 `github.com/zu1k/nali`，commit `1651b7a`），仓库内随附其 gz 包与 `.sha256`；旧 release `v0.8.1` 包同目录留档，可回退。
+
+交叉编译（Go ≥ 1.26；纯 Go、`CGO_ENABLED=0` 静态链接，无需目标机 gcc）：
+
+```sh
+cd nali-src
+VERSION=$(git describe --tags --always)
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 GOPROXY=https://goproxy.cn,direct \
+  go build -trimpath -ldflags "-s -w \
+  -X github.com/zu1k/nali/internal/constant.Version=$VERSION" \
+  -o nali-linux-arm64 .
+gzip -N nali-linux-arm64        # 得到 .gz，再对 .gz 生成 .sha256
+```
+
+部署到设备（aarch64）：
 
 ```sh
 # 1. 确认架构（应为 aarch64）
 uname -m
 
-# 2. 下载 gz 包到目标目录
-curl -fsSL --max-time 120 -o /etc/cn-ipset/nali.gz \
-  https://github.com/zu1k/nali/releases/download/v0.8.1/nali-linux-armv8-v0.8.1.gz
+# 2. 取仓库内 gz 包到目标目录（包名 nali-linux-armv8-v0.8.1-13-g1651b7a.gz）
+#    备选 release 资产：
+#    https://github.com/zu1k/nali/releases/download/v0.8.1/nali-linux-armv8-v0.8.1.gz
 
-# 3.（可选）对照 release 的 .sha256 校验完整性
+# 3.（可选）对照 .sha256 校验完整性
 sha256sum /etc/cn-ipset/nali.gz
 
 # 4. 解压为二进制并赋可执行权限
@@ -155,7 +167,7 @@ NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali -j 2001:4860:4860::8888
 - **调用必须带 `NALI_HOME=/etc/cn-ipset`**：不带该变量时 nali 回退到 XDG 默认目录（`~/.config/nali`、`~/.local/share/nali`），找不到 config 与库会尝试联网下载并超时。watch / CGI 封装命令需固定该环境变量。
 - 库缺失时 nali 会尝试按 `download-urls` 联网补下；部署时确保四库已就位，运行期查询保持离线。
 - IPv6 库（ZX）粒度只到运营商 / 大区，比 IPv4 纯真库粗，属预期。
-- 二进制与库均为运行时产物，默认不入库；随仓库分发的是 gz 包 + `.sha256` + `config.yaml`，解压后的 10MB 二进制与四库在设备上落地。
+- 二进制与库均为运行时产物，默认不入库；随仓库分发的是 gz 包 + `.sha256` + `config.yaml`，解压后的约 9.3MB 二进制与四库在设备上落地。
 
 ### 地址库刷新（cron）
 
