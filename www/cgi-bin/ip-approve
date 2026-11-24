@@ -102,11 +102,14 @@ read_namelist() {
             case "$line" in
                 \#*|';'*)
                     if [ -n "$cur_ip" ]; then
-                        # 去掉前导 # 后，首字段是 IP（丢弃），其余为归属地
+                        # 去掉前导 # 后，仅当首字段是合法条目才视为 `# <ip> <geo>` 注释；
+                        # 否则是文件头/分组注释（如 # lan），保留已有归属地不覆盖
                         rest=${line#\#}; rest=${rest# }
                         set -- $rest
-                        shift
-                        cur_geo=$*
+                        if [ $# -ge 1 ] && valid_entry "$1"; then
+                            shift
+                            cur_geo=$*
+                        fi
                     fi
                     ;;
                 *) flush_row; cur_ip="$line" ;;

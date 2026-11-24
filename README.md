@@ -30,6 +30,7 @@
 | cgi-bin/ip-approve | 审批执行核心（路由器上位于 /www/cgi-bin/ip-approve）：flock 原子更新 pending/allow/deny 底账与 nft 集合，面板/钉钉/CLI 三入口共用 |
 | approved-ip-watch.sh | 监听服务本体：解析探测日志 → nft pending 集合 + pending.list → 推钉钉 |
 | sync-approve-firewall.sh | 同步/重建防火墙：各组端口同步 + 缺失 ipset/规则自动重建（改端口变量后运行） |
+| refresh-namelist-geo.sh | 名单归属地维护：逐条 nali 重查 allow/deny 条目并覆盖刷新归属地注释；先备份、dry-run 预览、落盘 flock 原子替换 |
 | cn-ipset/refresh-cn-ipset.sh | 大陆集合刷新脚本：从 PassWall 规则同步 chnroute{,6} 副本 → `fw4 reload-sets`；副本为空则不刷新，避免集合被刷空导致全挡 |
 | cn-ipset/refresh-nali-db.sh | 归属地/CDN 库刷新脚本：先备份四库 → `nali update` → 非空校验、异常自动回滚 → 保留最近 3 份备份 |
 | cn-ipset/config.yaml | nali 运行配置：基于上游 default 全量条目，库文件均为相对路径；qqwry 指向 metowolf 源，ip2region 回退库用 v4 拆分双源；通过 `NALI_HOME=/etc/cn-ipset` 加载 |
@@ -185,6 +186,8 @@ nali 本身不是守护进程，**没有内置定时任务**；库刷新由外�
 ```
 /etc/ip-approve/approved-ip-watch.sh test <IP>     # 注入测试 IP：进 pending 并推钉钉（用 RFC5737 段，如 203.0.113.50）
 /etc/ip-approve/approved-ip-watch.sh backfill      # 把 nft pending 集合已有 IP 回填 pending.list（不推送）
+/etc/ip-approve/refresh-namelist-geo.sh             # 遍历 allow/deny 四份名单，nali 重查归属地并覆盖刷新 `# <ip> <geo>` 注释；默认 dry-run，加 --apply 落盘（落盘前自动备份到 backup/geo-<时间戳>/，保留最近 3 份）
+/etc/ip-approve/refresh-namelist-geo.sh deny        # 只处理黑名单；allow 同理；CIDR 取网段首地址查询
 ```
 
 ## 钉钉推送链路
