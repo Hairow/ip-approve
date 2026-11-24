@@ -25,8 +25,8 @@
 | approved.conf | 配置：钉钉 webhook/加签密钥、4 个端口变量（INPUT/FORWARD_APPROVE_PORT4/6）、QUICK_SECRET、QUICK_URL |
 | pending.list | 待审批 IP 队列（IP + 时间 + 端口 + 归属地）；审批落定时归属地以 `#` 注释行转入 allow/deny 名单 |
 | switch.html | 面板：设备/WAN/磁盘/服务开关 + IP 审批弹层 + IP 黑名单弹层（移除黑名单走 unban action） |
-| ip-allow.list / ip-allow6.list | 批准名单（写入 nft ip_allow / ip_allow6）；每行一个纯 IP/CIDR，紧随一行 `# 归属地` 注释（loadfile 与列表展示均跳过注释） |
-| ip-deny.list / ip-deny6.list | 拒绝名单（写入 nft ip_deny / ip_deny6）；格式同上，带 `# 归属地` 注释行 |
+| ip-allow.list / ip-allow6.list | 批准名单（写入 nft ip_allow / ip_allow6）；每行一个纯 IP/CIDR，紧随一行 `# <ip> <归属地>` 注释（loadfile 与列表展示均跳过注释） |
+| ip-deny.list / ip-deny6.list | 拒绝名单（写入 nft ip_deny / ip_deny6）；格式同上，带 `# <ip> <归属地>` 注释行；unban 时正文行与注释行一并删除 |
 | cgi-bin/ip-approve | 审批执行核心（路由器上位于 /www/cgi-bin/ip-approve）：flock 原子更新 pending/allow/deny 底账与 nft 集合，面板/钉钉/CLI 三入口共用 |
 | approved-ip-watch.sh | 监听服务本体：解析探测日志 → nft pending 集合 + pending.list → 推钉钉 |
 | sync-approve-firewall.sh | 同步/重建防火墙：各组端口同步 + 缺失 ipset/规则自动重建（改端口变量后运行） |

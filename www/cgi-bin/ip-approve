@@ -102,7 +102,11 @@ action_denylist() {
             case "$line" in
                 \#*|';'*)
                     if [ -n "$cur_ip" ]; then
-                        cur_geo=$(printf '%s' "$line" | sed -E 's/^#[[:space:]]*//; s/[[:space:]]+$//')
+                        # 注释格式 `# <ip> <geo>`：去掉前导 # 后，首字段是 IP（丢弃），其余为归属地
+                        rest=${line#\#}; rest=${rest# }
+                        set -- $rest
+                        shift
+                        cur_geo=$*
                     fi
                     ;;
                 *)
@@ -139,13 +143,16 @@ action_unban() {
         for ip in $ok4; do
             grep -qxF "$ip" "$CN/ip-deny.list" 2>/dev/null || continue
             echo "$ip" >> /tmp/.ipap.unban.done
-            grep -vxF "$ip" "$CN/ip-deny.list" > /tmp/.deny4.new 2>/dev/null
+            # 同时删正文行与对应的 `# <ip> <geo>` 注释行
+            awk -v ip="$ip" '$1 == ip { next } /^#/ && $2 == ip { next } { print }' \
+                "$CN/ip-deny.list" > /tmp/.deny4.new 2>/dev/null
             mv /tmp/.deny4.new "$CN/ip-deny.list"
         done
         for ip in $ok6; do
             grep -qxF "$ip" "$CN/ip-deny6.list" 2>/dev/null || continue
             echo "$ip" >> /tmp/.ipap.unban.done
-            grep -vxF "$ip" "$CN/ip-deny6.list" > /tmp/.deny6.new 2>/dev/null
+            awk -v ip="$ip" '$1 == ip { next } /^#/ && $2 == ip { next } { print }' \
+                "$CN/ip-deny6.list" > /tmp/.deny6.new 2>/dev/null
             mv /tmp/.deny6.new "$CN/ip-deny6.list"
         done
         echo ok > /tmp/.ipap.unban.lockrc
@@ -224,18 +231,18 @@ action_set() {
             { print }
         ' "$CN/pending.list" > /tmp/.pending.new
         mv /tmp/.pending.new "$CN/pending.list"
-        # 写入名单：纯 IP 一行，归属地以 `#` 注释行紧随其后（loadfile 与列表展示均跳过注释）
+        # 写入名单：纯 IP 一行；归属地以 `# <ip> <geo>` 注释行紧随其后（loadfile 与列表展示均跳过注释）
         for ip in $ok4; do
             grep -qxF "$ip" "$listfile" 2>/dev/null && continue
             echo "$ip" >> "$listfile"
             g=$(awk -v ip="$ip" '$1==ip{sub(/^[^\t]*\t/,"");print}' /tmp/.ipap.geo 2>/dev/null)
-            [ -n "$g" ] && echo "# $g" >> "$listfile"
+            [ -n "$g" ] && echo "# $ip $g" >> "$listfile"
         done
         for ip in $ok6; do
             grep -qxF "$ip" "$listfile6" 2>/dev/null && continue
             echo "$ip" >> "$listfile6"
             g=$(awk -v ip="$ip" '$1==ip{sub(/^[^\t]*\t/,"");print}' /tmp/.ipap.geo 2>/dev/null)
-            [ -n "$g" ] && echo "# $g" >> "$listfile6"
+            [ -n "$g" ] && echo "# $ip $g" >> "$listfile6"
         done
         echo ok > /tmp/.ipap.lockrc
     ) 9>"$PIDF_LOCK"
