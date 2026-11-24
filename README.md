@@ -80,6 +80,7 @@ cn 白名单相关文件在 /etc/cn-ipset/，与本目录无关。
 - 第 4 条的拦截动作与 zone 默认拒绝相同，纯粹为写日志；不重开 wan zone 全量日志（历史上曾因此产生 pending 污染）
 - **probe-log 是全系统唯一的日志源**：allow/deny/pending 规则均静默（allow/deny 无需记录，pending 的重复探测由 watch 去重，日志无用途）
 - input 组规则只匹配目标=路由器本机（input_wan 链）；forward 组匹配 wan→lan 转发流量（forward_wan 链）
+- **回程与已建连不会被审批组误匹配**：fw4 基础链在跳进 zone 链（input_wan/forward_wan）之前，已对 established/related 报文先行放行，回程包到不了审批规则；且回程报文的 dport 是对端分配的临时端口，也与审批端口对不上。已知缝隙：invalid/untracked 状态报文仍可能落到 zone 链被评估
 - 日志前缀由 fw4 取自规则名，watch 用泛匹配 `*pending-reject*` / `*probe-log*` 兜住所有前缀
 - 组随对应端口变量启停：留空 = 整组移除，流量走 zone 默认拒绝且不可审批
 
