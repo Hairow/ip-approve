@@ -5,6 +5,11 @@ approved.conf
 *.list
 pending.list
 
+# cn 路由表由 PassWall 数据经 refresh-cn-ipset.sh 定时刷新，不入库
+cn-ipset/chnroute
+cn-ipset/chnroute6
+cn-ipset/.cn-ipset.md5
+
 # 备份
 firewall.bak-*
 *.tar.gz

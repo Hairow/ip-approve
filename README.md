@@ -30,10 +30,12 @@
 | cgi-bin/ip-approve | 审批执行核心（路由器上位于 /www/cgi-bin/ip-approve）：flock 原子更新 pending/allow/deny 底账与 nft 集合，面板/钉钉/CLI 三入口共用 |
 | approved-ip-watch.sh | 监听服务本体：解析探测日志 → nft pending 集合 + pending.list → 推钉钉 |
 | sync-approve-firewall.sh | 同步/重建防火墙：各组端口同步 + 缺失 ipset/规则自动重建（改端口变量后运行） |
+| cn-ipset/refresh-cn-ipset.sh | 大陆集合刷新脚本：从 PassWall 规则同步 chnroute{,6} 副本 → `fw4 reload-sets`；副本为空则不刷新，避免集合被刷空导致全挡 |
+| cn-ipset/chnroute / chnroute6 | 大陆 IPv4/IPv6 路由表副本（运行时数据，不入库；远端位于 /etc/cn-ipset/） |
 | quick/cgi-bin/ip-approve-quick | 钉钉按钮的免登录签名 CGI（HMAC + 30 分钟时效 + pending 校验） |
 | README.md | 本文件 |
 
-cn 白名单相关文件在 /etc/cn-ipset/，与本目录无关。
+cn 集合在路由器上位于 `/etc/cn-ipset/`，本地仓库仅保留刷新脚本，路由表数据由脚本定时拉取、不入库。
 
 ## 服务操作（用 init 脚本，不要裸跑脚本本体）
 
