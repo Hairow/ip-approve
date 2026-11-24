@@ -92,12 +92,12 @@ geoip() {
     [ -x "$GEO_NALI" ] || return 0
     case "$ip" in
         *:*)
-            out=$(NALI_HOME="$GEO_HOME" "$GEO_NALI" -j "$ip" 2>/dev/null) ;;
+            out=$(NALI_HOME="$GEO_HOME" "$GEO_NALI" --color never -j "$ip" 2>/dev/null) ;;
         *)
-            out=$(NALI_HOME="$GEO_HOME" "$GEO_NALI" -j "$ip" 2>/dev/null)
+            out=$(NALI_HOME="$GEO_HOME" "$GEO_NALI" --color never -j "$ip" 2>/dev/null)
             text=$(_geo_text "$out")
             if [ -z "$text" ]; then
-                out=$(NALI_HOME="$GEO_HOME" NALI_DB_IP4=ip2region "$GEO_NALI" -j "$ip" 2>/dev/null)
+                out=$(NALI_HOME="$GEO_HOME" NALI_DB_IP4=ip2region "$GEO_NALI" --color never -j "$ip" 2>/dev/null)
             fi ;;
     esac
     text=$(_geo_text "$out")
