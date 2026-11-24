@@ -2077,7 +2077,8 @@
           const j = await r.json();
           if (!j.ok) {
             if (j.error === 'unauthorized') { modal.classList.remove('show'); return; }
-            document.getElementById('ipap-body').innerHTML = '<div class="ipap-empty">加载失败：' + (j.error || '') + '</div>';
+            if (allRows.length) { document.getElementById('ipap-msg').textContent = '刷新失败：' + (j.error || ''); }
+            else { document.getElementById('ipap-body').innerHTML = '<div class="ipap-empty">加载失败：' + (j.error || '') + '</div>'; }
             return;
           }
           allRows = j.rows || [];
@@ -2085,7 +2086,10 @@
           setCell(allRows.length);
           page = Math.min(page, totalPages());
           ipapGo(page);
-        } catch (e) { modal.classList.remove('show'); }
+        } catch (e) {
+          if (allRows.length) { document.getElementById('ipap-msg').textContent = '请求失败：' + e; }
+          else { modal.classList.remove('show'); }
+        }
       };
 
       window.ipapCountSync = async function () {
@@ -2105,9 +2109,11 @@
       };
 
       window.ipapOpen = function () {
-        document.getElementById('ipap-body').innerHTML = '<div class="ipap-empty">加载中…</div>';
         document.getElementById('ipap-msg').textContent = '';
         modal.classList.add('show');
+        /* 先用上次缓存填充，接口返回后再刷新；无缓存才显示加载中 */
+        if (allRows.length) { page = Math.min(page, totalPages()); ipapGo(page); }
+        else { document.getElementById('ipap-body').innerHTML = '<div class="ipap-empty">加载中…</div>'; }
         ipapRefresh();
       };
       window.ipapClose = function () { modal.classList.remove('show'); };
@@ -2298,7 +2304,11 @@
       window.denyRefresh = async function () {
         document.getElementById('deny-msg').textContent = '';
         try { await refreshList(); }
-        catch (e) { document.getElementById('deny-body').innerHTML = '<div class="ipap-empty">加载失败：' + esc(String(e.message || e)) + '</div>'; }
+        catch (e) {
+          const msg = esc(String(e.message || e));
+          if (allRows.length) { document.getElementById('deny-msg').textContent = '刷新失败：' + msg; }
+          else { document.getElementById('deny-body').innerHTML = '<div class="ipap-empty">加载失败：' + msg + '</div>'; }
+        }
       };
 
       window.denyCountSync = async function () {
@@ -2353,9 +2363,10 @@
       };
 
       window.denyOpen = function () {
-        document.getElementById('deny-body').innerHTML = '<div class="ipap-empty">加载中…</div>';
         document.getElementById('deny-msg').textContent = '';
         modal.classList.add('show');
+        if (allRows.length) { page = Math.min(page, totalPages()); denyGo(page); }
+        else { document.getElementById('deny-body').innerHTML = '<div class="ipap-empty">加载中…</div>'; }
         denyRefresh();
       };
       window.denyClose = function () { modal.classList.remove('show'); };
@@ -2500,7 +2511,11 @@
       window.allowRefresh = async function () {
         document.getElementById('allow-msg').textContent = '';
         try { await refreshList(); }
-        catch (e) { document.getElementById('allow-body').innerHTML = '<div class="ipap-empty">加载失败：' + esc(String(e.message || e)) + '</div>'; }
+        catch (e) {
+          const msg = esc(String(e.message || e));
+          if (allRows.length) { document.getElementById('allow-msg').textContent = '刷新失败：' + msg; }
+          else { document.getElementById('allow-body').innerHTML = '<div class="ipap-empty">加载失败：' + msg + '</div>'; }
+        }
       };
 
       window.allowCountSync = async function () {
@@ -2555,9 +2570,10 @@
       };
 
       window.allowOpen = function () {
-        document.getElementById('allow-body').innerHTML = '<div class="ipap-empty">加载中…</div>';
         document.getElementById('allow-msg').textContent = '';
         modal.classList.add('show');
+        if (allRows.length) { page = Math.min(page, totalPages()); allowGo(page); }
+        else { document.getElementById('allow-body').innerHTML = '<div class="ipap-empty">加载中…</div>'; }
         allowRefresh();
       };
       window.allowClose = function () { modal.classList.remove('show'); };
