@@ -1,6 +1,7 @@
 # nali 地址库配置
 # 由 watch 脚本以 NALI_HOME=/etc/cn-ipset 加载本文件；库文件与二进制同目录。
-# download-urls 仅在执行 `nali update --db <name>` 时使用；未配置的 zxipv6wry 走 nali 内置源。
+# download-urls 仅在执行 `nali update --db <name>` 时使用；仅 qqwry 指定 metowolf 源，
+# ip2region / zxipv6wry 不写下载源（zx 走 nali 内置源，ip2region 不由 nali update 刷新）。
 databases:
     - name: i2r-v4
       format: ip2region
@@ -9,9 +10,6 @@ databases:
         - zh-CN
       types:
         - IPv4
-      download-urls:
-        - "https://cdn.jsdelivr.net/gh/lionsoul2014/ip2region@master/data/ip2region_v4.xdb"
-        - "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb"
     - name: qqwry
       format: qqwry
       file: /etc/cn-ipset/qqwry.dat
@@ -29,6 +27,6 @@ databases:
       types:
         - IPv6
 selected:
-    ipv4: i2r-v4
+    ipv4: qqwry
     ipv6: zxipv6wry
     lang: zh-CN

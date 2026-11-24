@@ -34,8 +34,8 @@
 | cn-ipset/config.yaml | nali 配置：三库路径/类型/选中库 + 各库 `download-urls`；与二进制同目录，通过 `NALI_HOME=/etc/cn-ipset` 加载 |
 | cn-ipset/nali-linux-armv8-v0.8.1.gz (+ `.sha256`) | nali release 压缩包随仓库入库；设备上解压为 `/etc/cn-ipset/nali` |
 | cn-ipset/chnroute / chnroute6 | 大陆 IPv4/IPv6 路由表副本（运行时数据，不入库；远端位于 /etc/cn-ipset/） |
-| cn-ipset/ip2region_v4.xdb | 离线 IPv4 归属库**首选**（ip2region，运行时数据，不入库） |
-| cn-ipset/qqwry.dat | 离线 IPv4 归属库**回退**（纯真库，ip2region 未命中时使用，运行时数据，不入库） |
+| cn-ipset/qqwry.dat | 离线 IPv4 归属库**首选**（纯真库，运行时数据，不入库） |
+| cn-ipset/ip2region_v4.xdb | 离线 IPv4 归属库**回退**（ip2region，qqwry 未命中时使用，运行时数据，不入库） |
 | cn-ipset/zxipv6wry.db | 离线 IPv6 归属库（ZX，运行时数据，不入库） |
 | quick/cgi-bin/ip-approve-quick | 钉钉按钮的免登录签名 CGI（HMAC + 30 分钟时效 + pending 校验） |
 | README.md | 本文件 |
@@ -53,7 +53,7 @@ cn 集合在路由器上位于 `/etc/cn-ipset/`，本地仓库仅保留刷新脚
 | CPU 架构 | 设备为 **aarch64（arm64 / armv8）**，对应 release 资产 `nali-linux-armv8`；换其他架构需选用对应资产（amd64 / armv7 / mips 等），先 `uname -m` 确认 |
 | 动态链接 | **无额外运行库依赖**，静态编译二进制，musl / glibc 均可运行；不需要 opkg 安装任何包 |
 | 解压工具 | `gunzip`（busybox 自带）；校验用 `sha256sum`（可选，设备已自带） |
-| 离线 IPv4 库 | 首选 `/etc/cn-ipset/ip2region_v4.xdb`，回退 `/etc/cn-ipset/qqwry.dat`（纯真库） |
+| 离线 IPv4 库 | 首选 `/etc/cn-ipset/qqwry.dat`（纯真库），回退 `/etc/cn-ipset/ip2region_v4.xdb`（ip2region） |
 | 离线 IPv6 库 | `/etc/cn-ipset/zxipv6wry.db`（ZX IPv6 库） |
 | 磁盘占用 | gz 包约 3.9MB，解压后二进制约 10.1MB；三库合计约 41MB |
 
@@ -81,11 +81,15 @@ rm -f /etc/cn-ipset/nali.gz
 
 # 5. 放置配置文件到二进制同目录（内容见下节）：/etc/cn-ipset/config.yaml
 
-# 6. 首次拉取三库（之后由 cron 自动更新，见「地址库刷新」一节）
-NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db i2r-v4,qqwry,zxipv6wry
+# 6. 首次拉取可由 nali 更新的库（qqwry + zx；ip2region_v4.xdb 无下载源，需手动放置，见下注）
+NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db qqwry,zxipv6wry
 
 # 7. 确认三库就位
 ls -l /etc/cn-ipset/ip2region_v4.xdb /etc/cn-ipset/qqwry.dat /etc/cn-ipset/zxipv6wry.db
+```
+
+> ip2region v4 库不由 `nali update` 拉取，首次部署需手动下载到 `/etc/cn-ipset/ip2region_v4.xdb`：
+> `https://cdn.jsdelivr.net/gh/lionsoul2014/ip2region@master/data/ip2region_v4.xdb`（raw 备用）。
 ```
 
 ### 配置
@@ -95,44 +99,50 @@ ls -l /etc/cn-ipset/ip2region_v4.xdb /etc/cn-ipset/qqwry.dat /etc/cn-ipset/zxipv
 - `NALI_HOME=/etc/cn-ipset`：**配置目录与数据目录都指向该目录**（最简便，本项目采用）；
 - 或分开指定：`NALI_CONFIG_HOME`（配置目录）、`NALI_DB_HOME`（库目录）。
 
-配置文件名固定为 `<配置目录>/config.yaml`。三库 `file` 写成 `/etc/cn-ipset/` 下的绝对路径；`download-urls` 供 `nali update` 拉库使用，未配置的 zxipv6wry 走 nali 内置源：
+配置文件名固定为 `<配置目录>/config.yaml`。三库 `file` 写成 `/etc/cn-ipset/` 下的绝对路径；`download-urls` 只给 qqwry 指定 metowolf 源，zxipv6wry 走 nali 内置源，ip2region 不配置下载源（不由 `nali update` 刷新）：
 
 ```yaml
 databases:
     - name: i2r-v4
       format: ip2region
       file: /etc/cn-ipset/ip2region_v4.xdb
-      types: [IPv4]
-      download-urls:
-        - "https://cdn.jsdelivr.net/gh/lionsoul2014/ip2region@master/data/ip2region_v4.xdb"
-        - "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb"
+      languages:
+        - zh-CN
+      types:
+        - IPv4
     - name: qqwry
       format: qqwry
       file: /etc/cn-ipset/qqwry.dat
-      types: [IPv4]
+      languages:
+        - zh-CN
+      types:
+        - IPv4
       download-urls:
         - "https://github.com/metowolf/qqwry.dat/releases/latest/download/qqwry.dat"
     - name: zxipv6wry
       format: zxipv6wry
       file: /etc/cn-ipset/zxipv6wry.db
-      types: [IPv6]
+      languages:
+        - zh-CN
+      types:
+        - IPv6
 selected:
-    ipv4: i2r-v4
+    ipv4: qqwry
     ipv6: zxipv6wry
     lang: zh-CN
 ```
 
-查询优先级：**IPv4 先用 ip2region（i2r-v4），未命中再回退 qqwry**；IPv6 只用 zxipv6wry。回退由 watch 脚本在 shell 层用 `NALI_DB_IP4=qqwry` 切库实现（v0.8.1 不支持单库条目内多库并列）。
+查询优先级：**IPv4 先用 qqwry，未命中再回退 ip2region（i2r-v4）**；IPv6 只用 zxipv6wry。回退由 watch 脚本在 shell 层用 `NALI_DB_IP4=i2r-v4` 切库实现（v0.8.1 不支持单库条目内多库并列）。
 
 ### 验证
 
 ```sh
 # 必须带 NALI_HOME，让 nali 从同目录读 config 与库
-# IPv4（默认 i2r-v4）：text 形如 中国|山东省|烟台市|电信|CN
+# IPv4（默认 qqwry）：text 形如 中国–山东–烟台 电信
 NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali -j 113.124.101.115
 
-# IPv4 回退库 qqwry（切库）：text 形如 中国–山东–烟台 电信
-NALI_HOME=/etc/cn-ipset NALI_DB_IP4=qqwry /etc/cn-ipset/nali -j 113.124.101.115
+# IPv4 回退库 i2r-v4（切库）：text 形如 中国|山东省|烟台市|电信|CN
+NALI_HOME=/etc/cn-ipset NALI_DB_IP4=i2r-v4 /etc/cn-ipset/nali -j 113.124.101.115
 
 # IPv6（zxipv6wry）
 NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali -j 2001:4860:4860::8888
@@ -152,11 +162,12 @@ NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali -j 2001:4860:4860::8888
 nali 本身不是守护进程，**没有内置定时任务**；库刷新由外部 cron 调用 `nali update` 触发。设备 crontab：
 
 ```cron
-30 4 * * * NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db i2r-v4,qqwry,zxipv6wry 2>&1 | logger -t nali-update
+30 4 * * * NALI_HOME=/etc/cn-ipset /etc/cn-ipset/nali update --db qqwry,zxipv6wry 2>&1 | logger -t nali-update
 ```
 
-- `--db` 按 config 条目名更新：`i2r-v4` / `qqwry` 读各自 `download-urls`；`zxipv6wry` 未配源，走 nali 内置 `https://ip.zxinc.org/ip.7z`（下载后解压取 `ipv6wry.db`）。
-- `nali update` 只在执行时拉库，不做版本比对，每次全量下载；三库合计约 41MB，凌晨低峰执行一次。
+- `--db` 按 config 条目名更新：`qqwry` 读 metowolf `download-urls`；`zxipv6wry` 未配源，走 nali 内置 `https://ip.zxinc.org/ip.7z`（下载后解压取 `ipv6wry.db`）。
+- `i2r-v4` 未配 `download-urls`，v0.8.1 对 ip2region 无内置下载分支，`nali update` 会跳过并提示「暂不支持该类型数据库的自动更新」，因此不纳入 cron；该库保持手动部署的版本。
+- `nali update` 只在执行时拉库，不做版本比对，每次全量下载；更新的两库合计约 28MB，凌晨低峰执行一次。
 - 已知短板（v0.8.1）：写入为「先删旧库再直写目标文件」，非原子；ip2region 条目不做内容校验（qqwry / zx 有内置 CheckFile）；HTTP 无重试、超时固定（全局 60s、TLS 握手 5s）。断电或网络中断可能留下半截库，下次 update 失败时沿用旧库即可。
 
 ## 服务操作（用 init 脚本，不要裸跑脚本本体）
