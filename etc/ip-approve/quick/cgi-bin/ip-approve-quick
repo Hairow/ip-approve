@@ -25,6 +25,28 @@ now=$(date +%s)
 expect=$(printf '%s' "$a|$ip|$ts" | openssl dgst -sha256 -hmac "$QUICK_SECRET" -hex 2>/dev/null | awk '{print $NF}')
 [ "$expect" = "$sign" ] || fail "签名校验失败"
 
+# v6 单地址聚合 /64（与主 CGI 同规则；白名单按网段存放）
+q64() {
+  printf '%s' "${1%/*}" | awk '
+  function norm(s,  n,a,i,l,r,left,right,L,R,k,gap,segs,out) {
+    sub(/\/.*/, "", s); n = split(s, a, ":"); delete L; delete R; l = 0; r = 0
+    if (index(s, "::") > 0) {
+      left = substr(s, 1, index(s, "::") - 1); right = substr(s, index(s, "::") + 2)
+      if (left != "") l = split(left, L, ":")
+      if (right != "") r = split(right, R, ":")
+      gap = 8 - l - r; k = 0
+      for (i = 1; i <= l; i++) { if (L[i] != "") L[++k] = L[i] }
+      l = k; delete segs; k = 0
+      for (i = 1; i <= l; i++) segs[++k] = L[i]
+      for (i = 1; i <= gap; i++) segs[++k] = "0"
+      for (i = 1; i <= r; i++) segs[++k] = R[i]
+    } else { for (i = 1; i <= n; i++) segs[i] = a[i] }
+    out = segs[1]; for (i = 2; i <= 4; i++) out = out ":" segs[i]
+    print out "::/64"
+  }
+  { norm($0) }'
+}
+
 # 已处理过的 IP：回显实际状态（等效于更新原推送的状态）
 ipstate() {
   if printf '%s' "$ip" | grep -q ':'; then
@@ -32,7 +54,11 @@ ipstate() {
   else
     af=/etc/ip-approve/ip-allow.list; df=/etc/ip-approve/ip-deny.list
   fi
-  grep -qxF "$ip" "$af" 2>/dev/null && { echo approved; return; }
+  # 批准：单 IP 精确命中，或落在白名单某条 /64 网段内；拒绝：单地址精确匹配
+  if grep -qxF "$ip" "$af" 2>/dev/null \
+    || { printf '%s' "$ip" | grep -q ':' && grep -qxF "$(q64 "$ip")" "$af" 2>/dev/null; }; then
+    echo approved; return
+  fi
   grep -qxF "$ip" "$df" 2>/dev/null && { echo denied; return; }
   echo unknown
 }
