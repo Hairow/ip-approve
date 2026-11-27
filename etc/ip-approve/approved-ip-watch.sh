@@ -41,7 +41,7 @@ notify() {
         *) port_display="$port";;
     esac
     if [ -n "$geo" ]; then
-        geo=$(printf '%s' "$geo" | tr -d '[:space:]')
+        geo=$(printf '%s' "$geo" | sed 's/[[:space:]]//g')
         geo=$(_geo_json "$geo")
     fi
 
