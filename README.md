@@ -42,6 +42,7 @@
 | 仓库路径（即设备相对路径） | 作用 |
 |---------|------|
 | `etc/ip-approve/approved.conf.example` | 配置模板：钉钉 webhook / 加签、4 个端口变量、QUICK_SECRET / QUICK_URL；复制为 `approved.conf`，权限 600 |
+| `etc/ip-approve/ip-address.sh` | 共享严格 IPv4 / IPv6 / CIDR 校验函数，供主 CGI、快捷 CGI 与 watcher 调用 |
 | `etc/ip-approve/approved-ip-watch.sh` | 监听服务本体：解析探测日志 → pending 集合 + pending.list → 推钉钉 |
 | `etc/ip-approve/sync-approve-firewall.sh` | 各组端口同步 + 缺失集合 / 规则自动重建 |
 | `etc/init.d/approved-ip-watch` | watch 服务 procd 定义（START=99）；注入 `APPROVE_WATCH_SVC=1` 供脚本入口闸门校验 |

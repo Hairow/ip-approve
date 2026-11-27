@@ -9,6 +9,7 @@ fail() {
   exit 0
 }
 
+. /etc/ip-approve/ip-address.sh 2>/dev/null || fail "服务未配置 IP 校验器"
 qs="${QUERY_STRING:-}"
 get() { printf '%s' "$qs" | tr '&' '\n' | grep "^$1=" | head -1 | cut -d= -f2-; }
 
@@ -16,7 +17,7 @@ a=$(get a); ip=$(get ip); ts=$(get ts); sign=$(get sign)
 
 [ -n "$QUICK_SECRET" ] || fail "服务未配置密钥"
 [ "$a" = "approve" ] || [ "$a" = "deny" ] || fail "非法操作"
-printf '%s' "$ip" | grep -qE '^[0-9a-fA-F.:]{1,45}$' || fail "非法 IP"
+valid_ip "$ip" || fail "非法 IP"
 printf '%s' "$ts" | grep -qE '^[0-9]{10}$' || fail "非法时间戳"
 
 now=$(date +%s)
@@ -27,7 +28,9 @@ expect=$(printf '%s' "$a|$ip|$ts" | openssl dgst -sha256 -hmac "$QUICK_SECRET" -
 
 # v6 单地址聚合 /64（与主 CGI 同规则；白名单按网段存放）
 q64() {
-  printf '%s' "${1%/*}" | awk '
+  local ip6
+  ip6=$(ip6_hex_tail "${1%/*}") || return 1
+  printf '%s' "$ip6" | awk '
   function norm(s,  n,a,i,l,r,left,right,L,R,k,gap,segs,out) {
     sub(/\/.*/, "", s); n = split(s, a, ":"); delete L; delete R; l = 0; r = 0
     if (index(s, "::") > 0) {

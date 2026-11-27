@@ -9,6 +9,7 @@ CN=/etc/ip-approve
 PIDF_LOCK=/tmp/.pending.lock
 LOG=/tmp/.ipap-cgi.log
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
 
 # 诊断日志：仅追加到文件，不影响 JSON 响应；排查后可移除
 dbg() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
@@ -29,6 +30,11 @@ json_out() {
 
 fail() { json_out "{\"ok\":false,\"error\":\"$1\"}"; exit 0; }
 
+. "$CN/ip-address.sh" || fail "ip-validator-unavailable"
+TMP_DIR=$(mktemp -d "$CN/.cgi.XXXXXX") || fail "temp-dir-failed"
+trap 'rm -rf "$TMP_DIR"' 0
+trap 'exit 1' HUP INT TERM
+
 # 字符串进 JSON 前转义反斜杠与双引号
 json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -48,20 +54,14 @@ check_auth() {
     ubus call session get "{\"ubus_rpc_session\":\"$sid\"}" >/dev/null 2>&1
 }
 
-# ---- IP 校验 ----
-valid_ip4() {
-    echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
-    local o; for o in $(echo "$1" | tr '.' ' '); do [ "$o" -le 255 ] 2>/dev/null || return 1; done
-}
-valid_ip6() {
-    echo "$1" | grep -qE '^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F:.]{1,4}$' || return 1
-}
 # v6 单地址聚合为 /64 前缀（前 64 位）；非 v6 原样返回。
 # 白名单按 /64 放行，规避 IPv6 临时隐私地址轮换后重复进待审批；deny 不调用本函数。
 v6_64() {
+    local ip6
     case "$1" in
         *:*)
-            printf '%s' "${1%/*}" | awk '
+            ip6=$(ip6_hex_tail "${1%/*}") || return 1
+            printf '%s' "$ip6" | awk '
             function norm(s,  n,a,i,l,r,left,right,L,R,k,gap,segs,out) {
                 sub(/\/.*/, "", s)
                 n = split(s, a, ":")
@@ -88,21 +88,6 @@ v6_64() {
             { norm($0) }'
             ;;
         *) printf '%s' "$1" ;;
-    esac
-}
-
-# 名单条目：纯 IP 或 CIDR 网段（deny.list 里既有 223.104.195.18 也有 5.231.242.0/24）
-valid_entry() {
-    case "$1" in
-        */*)
-            local addr="${1%/*}" prefix="${1##*/}"
-            echo "$prefix" | grep -qE '^[0-9]+$' || return 1
-            case "$addr" in
-                *:*) valid_ip6 "$addr" || return 1; [ "$prefix" -le 128 ] 2>/dev/null || return 1;;
-                *)   valid_ip4 "$addr" || return 1; [ "$prefix" -le 32 ] 2>/dev/null || return 1;;
-            esac;;
-        *:*) valid_ip6 "$1" || return 1;;
-        *)   valid_ip4 "$1" || return 1;;
     esac
 }
 
@@ -202,20 +187,21 @@ action_remove() {
     [ -n "$okips" ] || fail "no-valid-entry"
 
     # flock 内原子更新两份名单；done 记入参（回显/校验），hit 记集合真实元素（删 nft 用）
-    rm -f /tmp/.ipap.rm.done /tmp/.ipap.rm.hit /tmp/.ipap.rm.lockrc
+    rm -f "$TMP_DIR/ipap.rm.done" "$TMP_DIR/ipap.rm.hit" "$TMP_DIR/ipap.rm.lockrc"
     (
         take_lock || { dbg "remove LOCK-BUSY act=$RM_ACT"; exit 1; }
-        : > /tmp/.ipap.rm.done
-        : > /tmp/.ipap.rm.hit
+        : > "$TMP_DIR/ipap.rm.done"
+        : > "$TMP_DIR/ipap.rm.hit"
         for ip in $ok4; do
             if grep -qxF "$ip" "$RM_F4" 2>/dev/null; then
                 dbg "remove hit v4 $ip"
-                echo "$ip" >> /tmp/.ipap.rm.done
-                echo "$ip" >> /tmp/.ipap.rm.hit
+                echo "$ip" >> "$TMP_DIR/ipap.rm.done"
+                echo "$ip" >> "$TMP_DIR/ipap.rm.hit"
                 # 同时删正文行与对应的 `# <ip> <geo>` 注释行
+                cp -p "$RM_F4" "$TMP_DIR/rm4.new" || exit 1
                 awk -v ip="$ip" '$1 == ip { next } /^#/ && $2 == ip { next } { print }' \
-                    "$RM_F4" > /tmp/.rm4.new 2>/dev/null
-                mv /tmp/.rm4.new "$RM_F4"
+                    "$RM_F4" > "$TMP_DIR/rm4.new" 2>/dev/null || exit 1
+                mv "$TMP_DIR/rm4.new" "$RM_F4" || exit 1
             else
                 dbg "remove miss v4 $ip"
             fi
@@ -231,24 +217,24 @@ action_remove() {
             fi
             if [ -n "$hit" ]; then
                 dbg "remove hit v6 $hit"
-                echo "$ip" >> /tmp/.ipap.rm.done
-                echo "$hit" >> /tmp/.ipap.rm.hit
+                echo "$ip" >> "$TMP_DIR/ipap.rm.done"
+                echo "$hit" >> "$TMP_DIR/ipap.rm.hit"
+                cp -p "$RM_F6" "$TMP_DIR/rm6.new" || exit 1
                 awk -v ip="$hit" '$1 == ip { next } /^#/ && $2 == ip { next } { print }' \
-                    "$RM_F6" > /tmp/.rm6.new 2>/dev/null
-                mv /tmp/.rm6.new "$RM_F6"
+                    "$RM_F6" > "$TMP_DIR/rm6.new" 2>/dev/null || exit 1
+                mv "$TMP_DIR/rm6.new" "$RM_F6" || exit 1
             else
                 dbg "remove miss v6 $ip"
             fi
         done
-        echo ok > /tmp/.ipap.rm.lockrc
+        echo ok > "$TMP_DIR/ipap.rm.lockrc"
     ) 9>"$PIDF_LOCK"
 
-    [ -f /tmp/.ipap.rm.lockrc ] || { dbg "remove OP-FAILED act=$RM_ACT ips=$okips"; fail "op-failed"; }
-    rm -f /tmp/.ipap.rm.lockrc
+    [ -f "$TMP_DIR/ipap.rm.lockrc" ] || { dbg "remove OP-FAILED act=$RM_ACT ips=$okips"; fail "op-failed"; }
 
     # 未命中的报对应错误码
     local done_ips="" h4="" h6=""
-    for ip in $(cat /tmp/.ipap.rm.done 2>/dev/null); do done_ips="$done_ips $ip"; done
+    for ip in $(cat "$TMP_DIR/ipap.rm.done" 2>/dev/null); do done_ips="$done_ips $ip"; done
     done_ips="${done_ips# }"
     for ip in $okips; do
         case " $done_ips " in
@@ -263,7 +249,7 @@ action_remove() {
         esac
     done
     # nft 删除用集合真实元素（v6 白名单可能是 /64 网段）
-    for el in $(cat /tmp/.ipap.rm.hit 2>/dev/null); do
+    for el in $(cat "$TMP_DIR/ipap.rm.hit" 2>/dev/null); do
         case "$el" in
             *:*) h6="${h6:+$h6, }$el";;
             *)   h4="${h4:+$h4, }$el";;
@@ -323,28 +309,29 @@ action_set() {
     [ -n "$okips" ] || fail "no-valid-ip"
 
     # 2. flock 内原子更新底账：从 pending.list 移除命中的，记录 done/miss
-    rm -f /tmp/.ipap.done /tmp/.ipap.geo /tmp/.ipap.lockrc
+    rm -f "$TMP_DIR/ipap.done" "$TMP_DIR/ipap.geo" "$TMP_DIR/ipap.lockrc"
     (
         take_lock || exit 1
-        : > /tmp/.ipap.done
-        : > /tmp/.ipap.geo
-        awk -v ok="$okips" '
+        : > "$TMP_DIR/ipap.done"
+        : > "$TMP_DIR/ipap.geo"
+        cp -p "$CN/pending.list" "$TMP_DIR/pending.new" || exit 1
+        awk -v ok="$okips" -v done_file="$TMP_DIR/ipap.done" -v geo_file="$TMP_DIR/ipap.geo" '
             BEGIN{n=split(ok,tmp," ");for(i=1;i<=n;i++)ex[tmp[i]]=1}
             $1 in ex {
-                print $1 > "/tmp/.ipap.done"
+                print $1 > done_file
                 geo=""
                 for(i=5;i<=NF;i++) geo=(geo==""?$i:geo" "$i)
-                print $1"\t"geo > "/tmp/.ipap.geo"
+                print $1"\t"geo > geo_file
                 next
             }
             { print }
-        ' "$CN/pending.list" > /tmp/.pending.new
-        mv /tmp/.pending.new "$CN/pending.list"
+        ' "$CN/pending.list" > "$TMP_DIR/pending.new" || exit 1
+        mv "$TMP_DIR/pending.new" "$CN/pending.list" || exit 1
         # 写入名单：纯 IP 一行；归属地以 `# <ip> <geo>` 注释行紧随其后（loadfile 与列表展示均跳过注释）
         for ip in $ok4; do
             grep -qxF "$ip" "$listfile" 2>/dev/null && continue
             echo "$ip" >> "$listfile"
-            g=$(awk -v ip="$ip" '$1==ip{sub(/^[^\t]*\t/,"");print}' /tmp/.ipap.geo 2>/dev/null)
+            g=$(awk -v ip="$ip" '$1==ip{sub(/^[^\t]*\t/,"");print}' "$TMP_DIR/ipap.geo" 2>/dev/null)
             [ -n "$g" ] && echo "# $ip $g" >> "$listfile"
         done
         for ip in $ok6; do
@@ -352,18 +339,17 @@ action_set() {
             if [ "$act" = "approve" ]; then entry=$(v6_64 "$ip"); else entry="$ip"; fi
             grep -qxF "$entry" "$listfile6" 2>/dev/null && continue
             echo "$entry" >> "$listfile6"
-            g=$(awk -v ip="$ip" '$1==ip{sub(/^[^\t]*\t/,"");print}' /tmp/.ipap.geo 2>/dev/null)
+            g=$(awk -v ip="$ip" '$1==ip{sub(/^[^\t]*\t/,"");print}' "$TMP_DIR/ipap.geo" 2>/dev/null)
             [ -n "$g" ] && echo "# $entry $g" >> "$listfile6"
         done
-        echo ok > /tmp/.ipap.lockrc
+        echo ok > "$TMP_DIR/ipap.lockrc"
     ) 9>"$PIDF_LOCK"
 
-    [ -f /tmp/.ipap.lockrc ] || fail "op-failed"
-    rm -f /tmp/.ipap.lockrc
+    [ -f "$TMP_DIR/ipap.lockrc" ] || fail "op-failed"
 
     # 3. 区分成功/未命中
     local done_ips="" e4="" e6="" p4="" p6=""
-    for ip in $(cat /tmp/.ipap.done 2>/dev/null); do done_ips="$done_ips $ip"; done
+    for ip in $(cat "$TMP_DIR/ipap.done" 2>/dev/null); do done_ips="$done_ips $ip"; done
     done_ips="${done_ips# }"
     for ip in $okips; do
         case " $done_ips " in

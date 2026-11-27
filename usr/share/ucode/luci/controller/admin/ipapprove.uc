@@ -6,7 +6,8 @@
 
 import { popen } from 'fs';
 
-const IP_RE = /^[0-9a-fA-F.:/]{1,50}$/;   // 支持纯 IP 与 CIDR 网段（黑名单里有 5.231.242.0/24）
+// Restrict shell arguments; the shared shell validator performs IP/CIDR validation.
+const IP_ARG_RE = /^[0-9a-fA-F.:/]{1,50}$/;
 const MAX_IPS = 500;
 
 function shell_quote(s) {
@@ -40,7 +41,7 @@ return {
 				if (type(body) == 'object' && body.action != null) {
 					action = body.action;
 					if (type(body.ips) == 'array')
-						ips = filter(body.ips, ip => type(ip) == 'string' && match(ip, IP_RE));
+						ips = filter(body.ips, ip => type(ip) == 'string' && match(ip, IP_ARG_RE));
 				}
 			}
 		}
@@ -48,7 +49,7 @@ return {
 		// 非 JSON POST 或解析失败时，回退到表单参数（GET 兼容）
 		if (type(ips) != 'array' || length(ips) == 0) {
 			const ip = http.formvalue('ip') ?? '';
-			if (match(ip, IP_RE))
+			if (match(ip, IP_ARG_RE))
 				ips = [ip];
 		}
 

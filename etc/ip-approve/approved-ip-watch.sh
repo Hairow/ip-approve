@@ -6,6 +6,7 @@
 
 CONF='/etc/ip-approve/approved.conf'
 PENDING='/etc/ip-approve/pending.list'
+PENDING_LOCK='/tmp/.pending.lock'
 PIDF='/tmp/.approved-ip-watch.pid'
 LASTNOT='/tmp/.approved-ip-lastnot'
 GEO_NALI='/etc/cn-ipset/nali'
@@ -13,6 +14,7 @@ GEO_HOME='/etc/cn-ipset'
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 [ -f "$CONF" ] && . "$CONF"
+. /etc/ip-approve/ip-address.sh || { echo "IP validator unavailable" >&2; exit 1; }
 
 # 归属地文本进钉钉 JSON 前转义反斜杠与双引号
 _geo_json() {
@@ -67,15 +69,6 @@ notify() {
 }
 
 
-# 源 IP 字符集白名单：v4 仅数字与点，v6 仅十六进制与冒号；
-# 拦截日志解析出的异物，避免污染钉钉 JSON 与 nft 命令行
-valid_src() {
-    case "$1" in
-        *:*) echo "$1" | grep -qE '^[0-9a-fA-F:]+$' ;;
-        *)   echo "$1" | grep -qE '^[0-9.]+$' ;;
-    esac
-}
-
 # 从 nali -j 的 JSON 输出提取 "text" 字段
 _geo_text() {
     printf '%s' "$1" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p'
@@ -110,14 +103,22 @@ geoip() {
 
 new_ip() {
     local set="$1" ip="$2" port="$3" geo
-    valid_src "$ip" || return
+    valid_ip "$ip" || return
     grep -qF "$ip " "$PENDING" 2>/dev/null && return
-    nft add element inet fw4 "$1" "{ $ip }" >/dev/null 2>&1 || return
     geo=$(geoip "$ip")
-    if [ -n "$geo" ]; then
-        echo "$ip $(date '+%F %T') ${port:--} $geo" >> "$PENDING"
-    else
-        echo "$ip $(date '+%F %T') ${port:--}" >> "$PENDING"
+    (
+        flock 9 || exit 1
+        grep -qF "$ip " "$PENDING" 2>/dev/null && exit 2
+        nft add element inet fw4 "$set" "{ $ip }" >/dev/null 2>&1 || exit 3
+        if ! printf '%s\n' "$ip $(date '+%F %T') ${port:--}${geo:+ $geo}" >> "$PENDING"; then
+            nft delete element inet fw4 "$set" "{ $ip }" >/dev/null 2>&1
+            exit 4
+        fi
+    ) 9>"$PENDING_LOCK"
+    local rc=$?
+    if [ "$rc" -ne 0 ]; then
+        [ "$rc" -eq 2 ] || logger -t approved-ip-watch "failed to add pending IP $ip (status $rc)"
+        return
     fi
     notify "$ip" "$port" "$geo"
 }
@@ -128,7 +129,7 @@ by_type() {
         192.168.*|10.*|127.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|169.254.*|0.0.0.0|255.255.255.255) return;;
         [fF][eE]8*|::1|::) return;;
     esac
-    valid_src "$ip" || return
+    valid_ip "$ip" || return
     case "$ip" in
         *:*) new_ip ip_pending6 "$ip" "$port";;
         *.*.*.*) new_ip ip_pending "$ip" "$port";;
@@ -147,7 +148,7 @@ backfill() {
                 192.168.*|10.*|127.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|169.254.*|0.0.0.0) continue;;
                 [fF][eE]8*|::1|::) continue;;
             esac
-            valid_src "$ip" || continue
+            valid_ip "$ip" || continue
             case "$ip" in
                 *:*) echo "add element inet fw4 ip_pending6 { $ip }";;
                 *.*.*.*) echo "add element inet fw4 ip_pending { $ip }";;
