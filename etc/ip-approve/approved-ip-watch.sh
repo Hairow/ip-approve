@@ -34,15 +34,18 @@ notify() {
         enc=$(printf '%s' "$sign" | awk '{gsub(/\+/,"%2B"); gsub(/\//,"%2F"); gsub(/=/,"%3D"); print}')
         url="$url&timestamp=$ts&sign=$enc"
     fi
-    local stamp port_display pinfo="" body content
+    local stamp port_display body content
     stamp=$(date '+%F %T')
     case "$port" in
         ''|'-') port_display="未知";;
-        *) port_display="$port"; pinfo="目标端口 $port";;
+        *) port_display="$port";;
     esac
-    [ -n "$geo" ] && geo=$(_geo_json "$geo")
+    if [ -n "$geo" ]; then
+        geo=$(printf '%s' "$geo" | tr -d '[:space:]')
+        geo=$(_geo_json "$geo")
+    fi
 
-    # 快捷按钮：HMAC 签名链接（30 分钟有效），无 QUICK_SECRET 时退回纯文本
+    # 快捷按钮：HMAC 签名链接（30 分钟有效），未配置时退回无按钮的 Markdown 通知
     if [ -n "$QUICK_SECRET" ] && [ -n "$QUICK_URL" ]; then
         local qts sa sd
         qts=$now
@@ -51,14 +54,14 @@ notify() {
         local uok uno
         uok="$QUICK_URL/cgi-bin/ip-approve-quick?a=approve&ip=$ip&ts=$qts&sign=$sa"
         uno="$QUICK_URL/cgi-bin/ip-approve-quick?a=deny&ip=$ip&ts=$qts&sign=$sd"
-        body="**时间：** $stamp\\n\\n**端口：** $port_display\\n\\n**归属地：** ${geo:-未知}\\n\\n> **备注：** 点下方按钮完成审批，链接 30 分钟内有效"
+        body="### $ip\\n\\n**时间：** $stamp\\n\\n**端口：** $port_display\\n\\n**归属地：** ${geo:-未知}\\n\\n> **备注：** 点下方按钮完成审批，链接 30 分钟内有效"
         curl -s -m 5 -H 'Content-Type: application/json' \
-            -d '{"msgtype":"actionCard","actionCard":{"title":"待审批 IP：'"$ip"'","text":"'"$body"'","hideAvatar":"0","btnOrientation":"1","btns":[{"title":"批准","actionURL":"'"$uok"'"},{"title":"拒绝","actionURL":"'"$uno"'"}]}}' \
+            -d '{"msgtype":"actionCard","actionCard":{"title":"IP审批","text":"'"$body"'","hideAvatar":"0","btnOrientation":"1","btns":[{"title":"✅ 批准","actionURL":"'"$uok"'"},{"title":"🚫 拒绝","actionURL":"'"$uno"'"}]}}' \
             "$url" >/dev/null
     else
-        content="【待审批IP】$ip 于 $stamp 探测进入待审批队列${pinfo:+（$pinfo）}${geo:+，归属地 $geo}，请及时审批"
+        content="### $ip\\n\\n**时间：** $stamp\\n\\n**端口：** $port_display\\n\\n**归属地：** ${geo:-未知}\\n\\n[请及时审批](https://192.168.100.1/switch.html)"
         curl -s -m 5 -H 'Content-Type: application/json' \
-            -d '{"msgtype":"text","text":{"content":"'"$content"'"}}' \
+            -d '{"msgtype":"markdown","markdown":{"title":"IP审批","text":"'"$content"'"}}' \
             "$url" >/dev/null
     fi
 }

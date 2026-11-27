@@ -18,9 +18,9 @@
       → 写 allow / deny 名单与 nft 集合，即时生效
 ```
 
-无 Tailscale / 无 QUICK_SECRET 时退回纯文本推送，核心审批链（探测 → pending → 面板手动批准 / 拒绝）不受影响。
+未配置快捷审批（缺少 `QUICK_SECRET` 或 `QUICK_URL`）时，改发无按钮的 Markdown 通知，并提供指向 `https://192.168.100.1/switch.html` 的审批链接；核心审批链（探测 → pending → 面板手动批准 / 拒绝）不受影响。
 
-快捷审批卡片以 IP 为标题，展示时间、端口与归属地，底部提供「批准 / 拒绝」按钮；快捷链接 30 分钟内有效。
+快捷审批卡片标题为「IP审批」，正文首行显示 IP 地址；时间、端口与归属地随后展示，归属地不含空格，底部提供「✅ 批准 / 🚫 拒绝」按钮；快捷链接 30 分钟内有效。
 
 ## 前置依赖
 
@@ -75,7 +75,7 @@
 | `FORWARD_APPROVE_PORT4` | 外网 → lan 转发（v4）审批端口 |
 | `FORWARD_APPROVE_PORT6` | 外网 → lan 转发（v6，fnOS Web）审批端口 |
 | `QUICK_SECRET` | 32 位 hex，watch 签名与 CGI 验签必须一致 |
-| `QUICK_URL` | 公网入口域名（Tailscale Funnel）；留空则推送退回纯文本 |
+| `QUICK_URL` | 公网入口域名（Tailscale Funnel）；留空则退回无按钮的 Markdown 通知 |
 
 forward 规则只按端口匹配、不限定目标主机，转发端口应只给单一目标服务使用。
 
