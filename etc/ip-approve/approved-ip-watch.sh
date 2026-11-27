@@ -34,9 +34,8 @@ notify() {
         enc=$(printf '%s' "$sign" | awk '{gsub(/\+/,"%2B"); gsub(/\//,"%2F"); gsub(/=/,"%3D"); print}')
         url="$url&timestamp=$ts&sign=$enc"
     fi
-    local stamp ip_type port_display pinfo="" body content
+    local stamp port_display pinfo="" body content
     stamp=$(date '+%F %T')
-    case "$ip" in *:*) ip_type="IPv6";; *) ip_type="IPv4";; esac
     case "$port" in
         ''|'-') port_display="未知";;
         *) port_display="$port"; pinfo="目标端口 $port";;
@@ -52,9 +51,9 @@ notify() {
         local uok uno
         uok="$QUICK_URL/cgi-bin/ip-approve-quick?a=approve&ip=$ip&ts=$qts&sign=$sa"
         uno="$QUICK_URL/cgi-bin/ip-approve-quick?a=deny&ip=$ip&ts=$qts&sign=$sd"
-        body="**IP：** $ip\\n\\n**时间：** $stamp\\n\\n**端口：** $port_display\\n\\n**归属地：** ${geo:-未知}\\n\\n> **备注：** 点下方按钮完成审批，链接 30 分钟内有效"
+        body="**时间：** $stamp\\n\\n**端口：** $port_display\\n\\n**归属地：** ${geo:-未知}\\n\\n> **备注：** 点下方按钮完成审批，链接 30 分钟内有效"
         curl -s -m 5 -H 'Content-Type: application/json' \
-            -d '{"msgtype":"actionCard","actionCard":{"title":"待审批 IP（'"$ip_type"'）","text":"'"$body"'","hideAvatar":"0","btnOrientation":"1","btns":[{"title":"批准","actionURL":"'"$uok"'"},{"title":"拒绝","actionURL":"'"$uno"'"}]}}' \
+            -d '{"msgtype":"actionCard","actionCard":{"title":"待审批 IP：'"$ip"'","text":"'"$body"'","hideAvatar":"0","btnOrientation":"1","btns":[{"title":"批准","actionURL":"'"$uok"'"},{"title":"拒绝","actionURL":"'"$uno"'"}]}}' \
             "$url" >/dev/null
     else
         content="【待审批IP】$ip 于 $stamp 探测进入待审批队列${pinfo:+（$pinfo）}${geo:+，归属地 $geo}，请及时审批"
